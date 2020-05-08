@@ -105,9 +105,7 @@ vdev_probe_all_drivers(struct rte_vdev_device *dev)
 	int ret;
 
 	name = rte_vdev_device_name(dev);
-
-	VDEV_LOG(DEBUG, "Search driver %s to probe device %s\n", name,
-		rte_vdev_device_name(dev));
+	VDEV_LOG(DEBUG, "Search driver to probe device %s\n", name);
 
 	if (vdev_parse(name, &driver))
 		return -1;
@@ -129,7 +127,7 @@ find_vdev(const char *name)
 	TAILQ_FOREACH(dev, &vdev_device_list, next) {
 		const char *devname = rte_vdev_device_name(dev);
 
-		if (!strncmp(devname, name, strlen(name)))
+		if (!strcmp(devname, name))
 			return dev;
 	}
 
@@ -289,6 +287,7 @@ static int
 vdev_probe(void)
 {
 	struct rte_vdev_device *dev;
+	int ret = 0;
 
 	/* call the init function for each virtual device */
 	TAILQ_FOREACH(dev, &vdev_device_list, next) {
@@ -299,11 +298,11 @@ vdev_probe(void)
 		if (vdev_probe_all_drivers(dev)) {
 			VDEV_LOG(ERR, "failed to initialize %s device\n",
 				rte_vdev_device_name(dev));
-			return -1;
+			ret = -1;
 		}
 	}
 
-	return 0;
+	return ret;
 }
 
 static struct rte_device *

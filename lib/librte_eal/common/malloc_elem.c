@@ -98,6 +98,7 @@ elem_start_pt(struct malloc_elem *elem, size_t size, unsigned align,
 	if ((new_data_start & bmask) != ((end_pt - 1) & bmask)) {
 		end_pt = RTE_ALIGN_FLOOR(end_pt, bound);
 		new_data_start = RTE_ALIGN_FLOOR((end_pt - size), align);
+		end_pt = new_data_start + size;
 		if (((end_pt - 1) & bmask) != (new_data_start & bmask))
 			return NULL;
 	}
@@ -135,6 +136,11 @@ split_elem(struct malloc_elem *elem, struct malloc_elem *split_pt)
 	next_elem->prev = split_pt;
 	elem->size = old_elem_size;
 	set_trailer(elem);
+	if (elem->pad) {
+		/* Update inner padding inner element size. */
+		elem = RTE_PTR_ADD(elem, elem->pad);
+		elem->size = old_elem_size - elem->pad;
+	}
 }
 
 /*
@@ -296,6 +302,8 @@ malloc_elem_free(struct malloc_elem *elem)
 		elem = elem->prev;
 	}
 	malloc_elem_free_list_insert(elem);
+
+	elem->pad = 0;
 
 	/* decrease heap's count of allocated elements */
 	elem->heap->alloc_count--;

@@ -45,6 +45,7 @@ struct rte_uio_pci_dev {
 	struct uio_info info;
 	struct pci_dev *pdev;
 	enum rte_intr_mode mode;
+	atomic_t refcnt;
 };
 
 static char *intr_mode;
@@ -253,7 +254,7 @@ igbuio_pci_enable_interrupts(struct rte_uio_pci_dev *udev)
 		}
 #endif
 
-	/* fall back to MSI */
+	/* falls through - to MSI */
 	case RTE_INTR_MODE_MSI:
 #ifndef HAVE_ALLOC_IRQ_VECTORS
 		if (pci_enable_msi(udev->pdev) == 0) {
@@ -272,7 +273,7 @@ igbuio_pci_enable_interrupts(struct rte_uio_pci_dev *udev)
 			break;
 		}
 #endif
-	/* fall back to INTX */
+	/* falls through - to INTX */
 	case RTE_INTR_MODE_LEGACY:
 		if (pci_intx_mask_supported(udev->pdev)) {
 			dev_dbg(&udev->pdev->dev, "using INTX");
@@ -282,7 +283,7 @@ igbuio_pci_enable_interrupts(struct rte_uio_pci_dev *udev)
 			break;
 		}
 		dev_notice(&udev->pdev->dev, "PCI INTX mask not supported\n");
-	/* fall back to no IRQ */
+	/* falls through - to no IRQ */
 	case RTE_INTR_MODE_NONE:
 		udev->mode = RTE_INTR_MODE_NONE;
 		udev->info.irq = UIO_IRQ_NONE;
@@ -336,16 +337,19 @@ igbuio_pci_open(struct uio_info *info, struct inode *inode)
 	struct pci_dev *dev = udev->pdev;
 	int err;
 
+	if (atomic_inc_return(&udev->refcnt) != 1)
+		return 0;
+
 	/* set bus master, which was cleared by the reset function */
 	pci_set_master(dev);
 
 	/* enable interrupts */
 	err = igbuio_pci_enable_interrupts(udev);
 	if (err) {
+		atomic_dec(&udev->refcnt);
 		dev_err(&dev->dev, "Enable interrupt fails\n");
-		return err;
 	}
-	return 0;
+	return err;
 }
 
 static int
@@ -354,11 +358,13 @@ igbuio_pci_release(struct uio_info *info, struct inode *inode)
 	struct rte_uio_pci_dev *udev = info->priv;
 	struct pci_dev *dev = udev->pdev;
 
-	/* disable interrupts */
-	igbuio_pci_disable_interrupts(udev);
+	if (atomic_dec_and_test(&udev->refcnt)) {
+		/* disable interrupts */
+		igbuio_pci_disable_interrupts(udev);
 
-	/* stop the device from further DMA */
-	pci_clear_master(dev);
+		/* stop the device from further DMA */
+		pci_clear_master(dev);
+	}
 
 	return 0;
 }
@@ -519,6 +525,7 @@ igbuio_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	udev->info.release = igbuio_pci_release;
 	udev->info.priv = udev;
 	udev->pdev = dev;
+	atomic_set(&udev->refcnt, 0);
 
 	err = sysfs_create_group(&dev->dev.kobj, &dev_attr_grp);
 	if (err != 0)

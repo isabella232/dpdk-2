@@ -106,12 +106,18 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs,
 
 	nb_lcores = rte_lcore_count() - 1;
 
-	if (enabled_cdev_count > nb_lcores) {
-		printf("Number of capable crypto devices (%d) "
-				"has to be less or equal to number of slave "
-				"cores (%d)\n", enabled_cdev_count, nb_lcores);
+	if (nb_lcores < 1) {
+		RTE_LOG(ERR, USER1,
+			"Number of enabled cores need to be higher than 1\n");
 		return -EINVAL;
 	}
+
+	/*
+	 * Use less number of devices,
+	 * if there are more available than cores.
+	 */
+	if (enabled_cdev_count > nb_lcores)
+		enabled_cdev_count = nb_lcores;
 
 	/* Create a mempool shared by all the devices */
 	uint32_t max_sess_size = 0, sess_size;
@@ -150,6 +156,11 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs,
 
 		struct rte_cryptodev_info cdev_info;
 		uint8_t socket_id = rte_cryptodev_socket_id(cdev_id);
+		/* range check the socket_id - negative values become big
+		 * positive ones due to use of unsigned value
+		 */
+		if (socket_id >= RTE_MAX_NUMA_NODES)
+			socket_id = 0;
 
 		rte_cryptodev_info_get(cdev_id, &cdev_info);
 		if (opts->nb_qps > cdev_info.max_nb_queue_pairs) {
@@ -318,7 +329,9 @@ cperf_check_test_vector(struct cperf_options *opts,
 				return -1;
 			if (test_vec->ciphertext.length < opts->max_buffer_size)
 				return -1;
-			if (test_vec->cipher_iv.data == NULL)
+			/* Cipher IV is only required for some algorithms */
+			if (opts->cipher_iv_sz &&
+					test_vec->cipher_iv.data == NULL)
 				return -1;
 			if (test_vec->cipher_iv.length != opts->cipher_iv_sz)
 				return -1;
@@ -333,7 +346,9 @@ cperf_check_test_vector(struct cperf_options *opts,
 				return -1;
 			if (test_vec->plaintext.length < opts->max_buffer_size)
 				return -1;
-			if (test_vec->auth_key.data == NULL)
+			/* Auth key is only required for some algorithms */
+			if (opts->auth_key_sz &&
+					test_vec->auth_key.data == NULL)
 				return -1;
 			if (test_vec->auth_key.length != opts->auth_key_sz)
 				return -1;

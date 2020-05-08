@@ -795,8 +795,10 @@ struct cmd_add_port_tm_node_shaper_profile_result {
 	cmdline_fixed_string_t profile;
 	uint16_t port_id;
 	uint32_t shaper_id;
-	uint64_t tb_rate;
-	uint64_t tb_size;
+	uint64_t cmit_tb_rate;
+	uint64_t cmit_tb_size;
+	uint64_t peak_tb_rate;
+	uint64_t peak_tb_size;
 	uint32_t pktlen_adjust;
 };
 
@@ -831,14 +833,22 @@ cmdline_parse_token_num_t cmd_add_port_tm_node_shaper_profile_shaper_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_shaper_profile_result,
 			shaper_id, UINT32);
-cmdline_parse_token_num_t cmd_add_port_tm_node_shaper_profile_tb_rate =
+cmdline_parse_token_num_t cmd_add_port_tm_node_shaper_profile_cmit_tb_rate =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_shaper_profile_result,
-			tb_rate, UINT64);
-cmdline_parse_token_num_t cmd_add_port_tm_node_shaper_profile_tb_size =
+			cmit_tb_rate, UINT64);
+cmdline_parse_token_num_t cmd_add_port_tm_node_shaper_profile_cmit_tb_size =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_shaper_profile_result,
-			tb_size, UINT64);
+			cmit_tb_size, UINT64);
+cmdline_parse_token_num_t cmd_add_port_tm_node_shaper_profile_peak_tb_rate =
+	TOKEN_NUM_INITIALIZER(
+		struct cmd_add_port_tm_node_shaper_profile_result,
+			peak_tb_rate, UINT64);
+cmdline_parse_token_num_t cmd_add_port_tm_node_shaper_profile_peak_tb_size =
+	TOKEN_NUM_INITIALIZER(
+		struct cmd_add_port_tm_node_shaper_profile_result,
+			peak_tb_size, UINT64);
 cmdline_parse_token_num_t cmd_add_port_tm_node_shaper_profile_pktlen_adjust =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_shaper_profile_result,
@@ -861,8 +871,10 @@ static void cmd_add_port_tm_node_shaper_profile_parsed(void *parsed_result,
 
 	/* Private shaper profile params */
 	memset(&sp, 0, sizeof(struct rte_tm_shaper_params));
-	sp.peak.rate = res->tb_rate;
-	sp.peak.size = res->tb_size;
+	sp.committed.rate = res->cmit_tb_rate;
+	sp.committed.size = res->cmit_tb_size;
+	sp.peak.rate = res->peak_tb_rate;
+	sp.peak.size = res->peak_tb_size;
 	sp.pkt_length_adjust = pkt_len_adjust;
 
 	ret = rte_tm_shaper_profile_add(port_id, shaper_id, &sp, &error);
@@ -885,8 +897,10 @@ cmdline_parse_inst_t cmd_add_port_tm_node_shaper_profile = {
 		(void *)&cmd_add_port_tm_node_shaper_profile_profile,
 		(void *)&cmd_add_port_tm_node_shaper_profile_port_id,
 		(void *)&cmd_add_port_tm_node_shaper_profile_shaper_id,
-		(void *)&cmd_add_port_tm_node_shaper_profile_tb_rate,
-		(void *)&cmd_add_port_tm_node_shaper_profile_tb_size,
+		(void *)&cmd_add_port_tm_node_shaper_profile_cmit_tb_rate,
+		(void *)&cmd_add_port_tm_node_shaper_profile_cmit_tb_size,
+		(void *)&cmd_add_port_tm_node_shaper_profile_peak_tb_rate,
+		(void *)&cmd_add_port_tm_node_shaper_profile_peak_tb_size,
 		(void *)&cmd_add_port_tm_node_shaper_profile_pktlen_adjust,
 		NULL,
 	},
@@ -1162,18 +1176,18 @@ struct cmd_add_port_tm_node_wred_profile_result {
 	uint16_t port_id;
 	uint32_t wred_profile_id;
 	cmdline_fixed_string_t color_g;
-	uint16_t min_th_g;
-	uint16_t max_th_g;
+	uint64_t min_th_g;
+	uint64_t max_th_g;
 	uint16_t maxp_inv_g;
 	uint16_t wq_log2_g;
 	cmdline_fixed_string_t color_y;
-	uint16_t min_th_y;
-	uint16_t max_th_y;
+	uint64_t min_th_y;
+	uint64_t max_th_y;
 	uint16_t maxp_inv_y;
 	uint16_t wq_log2_y;
 	cmdline_fixed_string_t color_r;
-	uint16_t min_th_r;
-	uint16_t max_th_r;
+	uint64_t min_th_r;
+	uint64_t max_th_r;
 	uint16_t maxp_inv_r;
 	uint16_t wq_log2_r;
 };
@@ -1212,11 +1226,11 @@ cmdline_parse_token_string_t cmd_add_port_tm_node_wred_profile_color_g =
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_min_th_g =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
-			min_th_g, UINT16);
+			min_th_g, UINT64);
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_max_th_g =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
-			max_th_g, UINT16);
+			max_th_g, UINT64);
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_maxp_inv_g =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
@@ -1232,11 +1246,11 @@ cmdline_parse_token_string_t cmd_add_port_tm_node_wred_profile_color_y =
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_min_th_y =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
-			min_th_y, UINT16);
+			min_th_y, UINT64);
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_max_th_y =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
-			max_th_y, UINT16);
+			max_th_y, UINT64);
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_maxp_inv_y =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
@@ -1252,11 +1266,11 @@ cmdline_parse_token_string_t cmd_add_port_tm_node_wred_profile_color_r =
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_min_th_r =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
-			min_th_r, UINT16);
+			min_th_r, UINT64);
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_max_th_r =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
-			max_th_r, UINT16);
+			max_th_r, UINT64);
 cmdline_parse_token_num_t cmd_add_port_tm_node_wred_profile_maxp_inv_r =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_tm_node_wred_profile_result,
@@ -1624,10 +1638,12 @@ static void cmd_add_port_tm_nonleaf_node_parsed(void *parsed_result,
 
 	np.shaper_profile_id = res->shaper_profile_id;
 	np.n_shared_shapers = n_shared_shapers;
-	if (np.n_shared_shapers)
+	if (np.n_shared_shapers) {
 		np.shared_shaper_id = &shared_shaper_id[0];
-	else
-		np.shared_shaper_id = NULL;
+	} else {
+		free(shared_shaper_id);
+		shared_shaper_id = NULL;
+	}
 
 	np.nonleaf.n_sp_priorities = res->n_sp_priorities;
 	np.stats_mask = res->stats_mask;
@@ -1779,10 +1795,12 @@ static void cmd_add_port_tm_leaf_node_parsed(void *parsed_result,
 	np.shaper_profile_id = res->shaper_profile_id;
 	np.n_shared_shapers = n_shared_shapers;
 
-	if (np.n_shared_shapers)
+	if (np.n_shared_shapers) {
 		np.shared_shaper_id = &shared_shaper_id[0];
-	else
-		np.shared_shaper_id = NULL;
+	} else {
+		free(shared_shaper_id);
+		shared_shaper_id = NULL;
+	}
 
 	np.leaf.cman = res->cman_mode;
 	np.leaf.wred.wred_profile_id = res->wred_profile_id;

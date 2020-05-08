@@ -1515,7 +1515,10 @@ struct protocol_dcb_data {
 	u8 dcb_priority /* dcbPri flag value */;
 	u8 dcb_tc /* dcb TC value */;
 	u8 dscp_val /* dscp value to write if dscp_enable_flag is set */;
-	u8 reserved0;
+/* When DCB is enabled - if this flag is set, dont add VLAN 0 tag to untagged
+ * frames
+ */
+	u8 dcb_dont_add_vlan0;
 };
 
 /*
@@ -2143,7 +2146,7 @@ struct igu_cleanup {
 #define IGU_CLEANUP_CLEANUP_TYPE_MASK  0x7
 #define IGU_CLEANUP_CLEANUP_TYPE_SHIFT 28
 /* must always be set (use enum command_type_bit) */
-#define IGU_CLEANUP_COMMAND_TYPE_MASK  0x1
+#define IGU_CLEANUP_COMMAND_TYPE_MASK  0x1U
 #define IGU_CLEANUP_COMMAND_TYPE_SHIFT 31
 	__le32 reserved1;
 };

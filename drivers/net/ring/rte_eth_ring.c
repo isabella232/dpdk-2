@@ -89,7 +89,7 @@ static struct rte_eth_link pmd_link = {
 		.link_speed = ETH_SPEED_NUM_10G,
 		.link_duplex = ETH_LINK_FULL_DUPLEX,
 		.link_status = ETH_LINK_DOWN,
-		.link_autoneg = ETH_LINK_SPEED_AUTONEG
+		.link_autoneg = ETH_LINK_FIXED,
 };
 
 static uint16_t
@@ -288,24 +288,15 @@ do_eth_dev_ring_create(const char *name,
 	RTE_LOG(INFO, PMD, "Creating rings-backed ethdev on numa socket %u\n",
 			numa_node);
 
-	/* now do all data allocation - for eth_dev structure, dummy pci driver
-	 * and internal (private) data
-	 */
-	data = rte_zmalloc_socket(name, sizeof(*data), 0, numa_node);
-	if (data == NULL) {
-		rte_errno = ENOMEM;
-		goto error;
-	}
-
-	rx_queues_local = rte_zmalloc_socket(name,
-			sizeof(void *) * nb_rx_queues, 0, numa_node);
+	rx_queues_local = rte_calloc_socket(name, nb_rx_queues,
+					    sizeof(void *), 0, numa_node);
 	if (rx_queues_local == NULL) {
 		rte_errno = ENOMEM;
 		goto error;
 	}
 
-	tx_queues_local = rte_zmalloc_socket(name,
-			sizeof(void *) * nb_tx_queues, 0, numa_node);
+	tx_queues_local = rte_calloc_socket(name, nb_tx_queues,
+					    sizeof(void *), 0, numa_node);
 	if (tx_queues_local == NULL) {
 		rte_errno = ENOMEM;
 		goto error;
@@ -330,10 +321,8 @@ do_eth_dev_ring_create(const char *name,
 	 * - point eth_dev_data to internals
 	 * - and point eth_dev structure to new eth_dev_data structure
 	 */
-	/* NOTE: we'll replace the data element, of originally allocated eth_dev
-	 * so the rings are local per-process */
 
-	rte_memcpy(data, eth_dev->data, sizeof(*data));
+	data = eth_dev->data;
 	data->rx_queues = rx_queues_local;
 	data->tx_queues = tx_queues_local;
 
@@ -355,7 +344,6 @@ do_eth_dev_ring_create(const char *name,
 	data->dev_link = pmd_link;
 	data->mac_addrs = &internals->address;
 
-	eth_dev->data = data;
 	eth_dev->dev_ops = &ops;
 	data->kdrv = RTE_KDRV_NONE;
 	data->numa_node = numa_node;
@@ -371,7 +359,6 @@ do_eth_dev_ring_create(const char *name,
 error:
 	rte_free(rx_queues_local);
 	rte_free(tx_queues_local);
-	rte_free(data);
 	rte_free(internals);
 
 	return -1;
@@ -392,8 +379,8 @@ rte_eth_from_rings(const char *name, struct rte_ring *const rx_queues[],
 		.numa_node = numa_node,
 		.addr = &args,
 	};
-	char args_str[32] = { 0 };
-	char ring_name[32] = { 0 };
+	char args_str[32];
+	char ring_name[RTE_RING_NAMESIZE];
 	uint16_t port_id = RTE_MAX_ETHPORTS;
 	int ret;
 
@@ -411,8 +398,14 @@ rte_eth_from_rings(const char *name, struct rte_ring *const rx_queues[],
 		return -1;
 	}
 
-	snprintf(args_str, 32, "%s=%p", ETH_RING_INTERNAL_ARG, &args);
-	snprintf(ring_name, 32, "net_ring_%s", name);
+	snprintf(args_str, sizeof(args_str), "%s=%p",
+		 ETH_RING_INTERNAL_ARG, &args);
+
+	ret = snprintf(ring_name, sizeof(ring_name), "net_ring_%s", name);
+	if (ret >= (int)sizeof(ring_name)) {
+		rte_errno = ENAMETOOLONG;
+		return -1;
+	}
 
 	ret = rte_vdev_init(ring_name, args_str);
 	if (ret) {
@@ -420,7 +413,11 @@ rte_eth_from_rings(const char *name, struct rte_ring *const rx_queues[],
 		return -1;
 	}
 
-	rte_eth_dev_get_port_by_name(ring_name, &port_id);
+	ret = rte_eth_dev_get_port_by_name(ring_name, &port_id);
+	if (ret) {
+		rte_errno = ENODEV;
+		return -1;
+	}
 
 	return port_id;
 }
@@ -446,7 +443,15 @@ eth_dev_ring_create(const char *name, const unsigned numa_node,
 			RTE_PMD_RING_MAX_TX_RINGS);
 
 	for (i = 0; i < num_rings; i++) {
-		snprintf(rng_name, sizeof(rng_name), "ETH_RXTX%u_%s", i, name);
+		int cc;
+
+		cc = snprintf(rng_name, sizeof(rng_name),
+			      "ETH_RXTX%u_%s", i, name);
+		if (cc >= (int)sizeof(rng_name)) {
+			rte_errno = ENAMETOOLONG;
+			return -1;
+		}
+
 		rxtx[i] = (action == DEV_CREATE) ?
 				rte_ring_create(rng_name, 1024, numa_node,
 						RING_F_SP_ENQ|RING_F_SC_DEQ) :
@@ -703,8 +708,6 @@ rte_pmd_ring_remove(struct rte_vdev_device *dev)
 	rte_free(eth_dev->data->rx_queues);
 	rte_free(eth_dev->data->tx_queues);
 	rte_free(eth_dev->data->dev_private);
-
-	rte_free(eth_dev->data);
 
 	rte_eth_dev_release_port(eth_dev);
 	return 0;

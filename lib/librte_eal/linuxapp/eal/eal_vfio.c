@@ -525,7 +525,7 @@ rte_vfio_enable(const char *modname)
 int
 rte_vfio_is_enabled(const char *modname)
 {
-	const int mod_available = rte_eal_check_module(modname);
+	const int mod_available = rte_eal_check_module(modname) > 0;
 	return vfio_cfg.vfio_enabled && mod_available;
 }
 
@@ -710,10 +710,7 @@ vfio_type1_dma_map(int vfio_container_fd)
 		dma_map.argsz = sizeof(struct vfio_iommu_type1_dma_map);
 		dma_map.vaddr = ms[i].addr_64;
 		dma_map.size = ms[i].len;
-		if (rte_eal_iova_mode() == RTE_IOVA_VA)
-			dma_map.iova = dma_map.vaddr;
-		else
-			dma_map.iova = ms[i].iova;
+		dma_map.iova = ms[i].iova;
 		dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
 
 		ret = ioctl(vfio_container_fd, VFIO_IOMMU_MAP_DMA, &dma_map);
@@ -813,10 +810,7 @@ vfio_spapr_dma_map(int vfio_container_fd)
 		dma_map.argsz = sizeof(struct vfio_iommu_type1_dma_map);
 		dma_map.vaddr = ms[i].addr_64;
 		dma_map.size = ms[i].len;
-		if (rte_eal_iova_mode() == RTE_IOVA_VA)
-			dma_map.iova = dma_map.vaddr;
-		else
-			dma_map.iova = ms[i].iova;
+		dma_map.iova = ms[i].iova;
 		dma_map.flags = VFIO_DMA_MAP_FLAG_READ |
 				 VFIO_DMA_MAP_FLAG_WRITE;
 

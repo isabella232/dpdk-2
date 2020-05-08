@@ -220,7 +220,6 @@ struct rte_port {
 	uint16_t                tunnel_tso_segsz; /**< Segmentation offload MSS for tunneled pkts. */
 	uint16_t                tx_vlan_id;/**< The tag ID */
 	uint16_t                tx_vlan_id_outer;/**< The outer tag ID */
-	void                    *fwd_ctx;   /**< Forwarding mode context */
 	uint64_t                rx_bad_ip_csum; /**< rx pkts with bad ip checksum  */
 	uint64_t                rx_bad_l4_csum; /**< rx pkts with bad l4 checksum */
 	uint8_t                 tx_queue_stats_mapping_enabled;
@@ -599,6 +598,7 @@ void fwd_config_setup(void);
 void set_def_fwd_config(void);
 void reconfig(portid_t new_port_id, unsigned socket_id);
 int init_fwd_streams(void);
+void update_fwd_ports(portid_t new_pid);
 
 void port_mtu_set(portid_t port_id, uint16_t mtu);
 void port_reg_bit_display(portid_t port_id, uint32_t reg_off, uint8_t bit_pos);
@@ -726,7 +726,13 @@ enum print_warning {
 	DISABLED_WARN
 };
 int port_id_is_invalid(portid_t port_id, enum print_warning warning);
+void print_valid_ports(void);
 int new_socket_id(unsigned int socket_id);
+
+queueid_t get_allowed_max_nb_rxq(portid_t *pid);
+int check_nb_rxq(queueid_t rxq);
+queueid_t get_allowed_max_nb_txq(portid_t *pid);
+int check_nb_txq(queueid_t txq);
 
 /*
  * Work-around of a compilation error with ICC on invocations of the

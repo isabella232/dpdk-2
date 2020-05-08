@@ -159,6 +159,14 @@ void bnxt_free_filter_mem(struct bnxt *bp)
 
 	rte_free(bp->filter_info);
 	bp->filter_info = NULL;
+
+	for (i = 0; i < bp->pf.max_vfs; i++) {
+		STAILQ_FOREACH(filter, &bp->pf.vf_info[i].filter, next) {
+			rte_free(filter);
+			STAILQ_REMOVE(&bp->pf.vf_info[i].filter, filter,
+				      bnxt_filter_info, next);
+		}
+	}
 }
 
 int bnxt_alloc_filter_mem(struct bnxt *bp)
@@ -1042,8 +1050,27 @@ bnxt_match_filter(struct bnxt *bp, struct bnxt_filter_info *nf)
 			    !memcmp(mf->dst_ipaddr, nf->dst_ipaddr,
 				    sizeof(nf->dst_ipaddr)) &&
 			    !memcmp(mf->dst_ipaddr_mask, nf->dst_ipaddr_mask,
-				    sizeof(nf->dst_ipaddr_mask)))
-				return -EEXIST;
+				    sizeof(nf->dst_ipaddr_mask))) {
+				if (mf->dst_id == nf->dst_id)
+					return -EEXIST;
+				/*
+				 * Same Flow, Different queue
+				 * Clear the old ntuple filter
+				 * Reuse the matching L2 filter
+				 * ID for the new filter
+				 */
+				nf->fw_l2_filter_id = mf->fw_l2_filter_id;
+				if (nf->filter_type == HWRM_CFA_EM_FILTER)
+					bnxt_hwrm_clear_em_filter(bp, mf);
+				if (nf->filter_type == HWRM_CFA_NTUPLE_FILTER)
+					bnxt_hwrm_clear_ntuple_filter(bp, mf);
+				/* Free the old filter, update flow
+				 * with new filter
+				 */
+				bnxt_free_filter(bp, mf);
+				flow->filter = nf;
+				return -EXDEV;
+			}
 		}
 	}
 	return 0;
@@ -1059,6 +1086,7 @@ bnxt_flow_create(struct rte_eth_dev *dev,
 	struct bnxt *bp = (struct bnxt *)dev->data->dev_private;
 	struct bnxt_filter_info *filter;
 	struct bnxt_vnic_info *vnic = NULL;
+	bool update_flow = false;
 	struct rte_flow *flow;
 	unsigned int i;
 	int ret = 0;
@@ -1089,9 +1117,17 @@ bnxt_flow_create(struct rte_eth_dev *dev,
 		goto free_filter;
 
 	ret = bnxt_match_filter(bp, filter);
-	if (ret != 0) {
+	if (ret == -EEXIST) {
 		RTE_LOG(DEBUG, PMD, "Flow already exists.\n");
+		/* Clear the filter that was created as part of
+		 * validate_and_parse_flow() above
+		 */
+		bnxt_hwrm_clear_l2_filter(bp, filter);
 		goto free_filter;
+	} else if (ret == -EXDEV) {
+		RTE_LOG(DEBUG, PMD, "Flow with same pattern exists");
+		RTE_LOG(DEBUG, PMD, "Updating with different destination\n");
+		update_flow = true;
 	}
 
 	if (filter->filter_type == HWRM_CFA_EM_FILTER) {
@@ -1114,22 +1150,29 @@ bnxt_flow_create(struct rte_eth_dev *dev,
 	if (!ret) {
 		flow->filter = filter;
 		flow->vnic = vnic;
+		if (update_flow) {
+			ret = -EXDEV;
+			goto free_flow;
+		}
 		RTE_LOG(ERR, PMD, "Successfully created flow.\n");
 		STAILQ_INSERT_TAIL(&vnic->flow_list, flow, next);
 		return flow;
 	}
 free_filter:
-	filter->fw_l2_filter_id = -1;
 	bnxt_free_filter(bp, filter);
 free_flow:
 	if (ret == -EEXIST)
 		rte_flow_error_set(error, ret,
 				   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 				   "Matching Flow exists.");
+	else if (ret == -EXDEV)
+		rte_flow_error_set(error, ret,
+				   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+				   "Flow with pattern exists, updating destination queue");
 	else
 		rte_flow_error_set(error, -ret,
 				   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
-			   "Failed to create flow.");
+				   "Failed to create flow.");
 	rte_free(flow);
 	flow = NULL;
 	return flow;
@@ -1153,6 +1196,7 @@ bnxt_flow_destroy(struct rte_eth_dev *dev,
 	if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER)
 		ret = bnxt_hwrm_clear_ntuple_filter(bp, filter);
 
+	bnxt_hwrm_clear_l2_filter(bp, filter);
 	if (!ret) {
 		STAILQ_REMOVE(&vnic->flow_list, flow, rte_flow, next);
 		rte_free(flow);

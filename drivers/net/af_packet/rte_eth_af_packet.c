@@ -124,7 +124,7 @@ static struct rte_eth_link pmd_link = {
 	.link_speed = ETH_SPEED_NUM_10G,
 	.link_duplex = ETH_LINK_FULL_DUPLEX,
 	.link_status = ETH_LINK_DOWN,
-	.link_autoneg = ETH_LINK_SPEED_AUTONEG
+	.link_autoneg = ETH_LINK_FIXED,
 };
 
 static uint16_t
@@ -263,8 +263,14 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	}
 
 	/* kick-off transmits */
-	if (sendto(pkt_q->sockfd, NULL, 0, MSG_DONTWAIT, NULL, 0) == -1) {
-		/* error sending -- no packets transmitted */
+	if (sendto(pkt_q->sockfd, NULL, 0, MSG_DONTWAIT, NULL, 0) == -1 &&
+			errno != ENOBUFS && errno != EAGAIN) {
+		/*
+		 * In case of a ENOBUFS/EAGAIN error all of the enqueued
+		 * packets will be considered successful even though only some
+		 * are sent.
+		 */
+
 		num_tx = 0;
 		num_tx_bytes = 0;
 	}
@@ -457,8 +463,7 @@ eth_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	int ret;
 	int s;
 	unsigned int data_size = internals->req.tp_frame_size -
-				 TPACKET2_HDRLEN -
-				 sizeof(struct sockaddr_ll);
+				 TPACKET2_HDRLEN;
 
 	if (mtu > data_size)
 		return -EINVAL;
@@ -594,25 +599,17 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 		RTE_LOG(ERR, PMD,
 			"%s: no interface specified for AF_PACKET ethdev\n",
 		        name);
-		goto error_early;
+		return -1;
 	}
 
 	RTE_LOG(INFO, PMD,
 		"%s: creating AF_PACKET-backed ethdev on numa socket %u\n",
 		name, numa_node);
 
-	/*
-	 * now do all data allocation - for eth_dev structure, dummy pci driver
-	 * and internal (private) data
-	 */
-	data = rte_zmalloc_socket(name, sizeof(*data), 0, numa_node);
-	if (data == NULL)
-		goto error_early;
-
 	*internals = rte_zmalloc_socket(name, sizeof(**internals),
 	                                0, numa_node);
 	if (*internals == NULL)
-		goto error_early;
+		return -1;
 
 	for (q = 0; q < nb_queues; q++) {
 		(*internals)->rx_queue[q].map = MAP_FAILED;
@@ -634,24 +631,24 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 		RTE_LOG(ERR, PMD,
 			"%s: I/F name too long (%s)\n",
 			name, pair->value);
-		goto error_early;
+		return -1;
 	}
 	if (ioctl(sockfd, SIOCGIFINDEX, &ifr) == -1) {
 		RTE_LOG(ERR, PMD,
 			"%s: ioctl failed (SIOCGIFINDEX)\n",
 		        name);
-		goto error_early;
+		return -1;
 	}
 	(*internals)->if_name = strdup(pair->value);
 	if ((*internals)->if_name == NULL)
-		goto error_early;
+		return -1;
 	(*internals)->if_index = ifr.ifr_ifindex;
 
 	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) == -1) {
 		RTE_LOG(ERR, PMD,
 			"%s: ioctl failed (SIOCGIFHWADDR)\n",
 		        name);
-		goto error_early;
+		return -1;
 	}
 	memcpy(&(*internals)->eth_addr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
 
@@ -805,14 +802,13 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 
 	(*internals)->nb_queues = nb_queues;
 
-	rte_memcpy(data, (*eth_dev)->data, sizeof(*data));
+	data = (*eth_dev)->data;
 	data->dev_private = *internals;
 	data->nb_rx_queues = (uint16_t)nb_queues;
 	data->nb_tx_queues = (uint16_t)nb_queues;
 	data->dev_link = pmd_link;
 	data->mac_addrs = &(*internals)->eth_addr;
 
-	(*eth_dev)->data = data;
 	(*eth_dev)->dev_ops = &ops;
 
 	return 0;
@@ -832,8 +828,6 @@ error:
 	}
 	free((*internals)->if_name);
 	rte_free(*internals);
-error_early:
-	rte_free(data);
 	return -1;
 }
 
@@ -994,6 +988,7 @@ rte_pmd_af_packet_remove(struct rte_vdev_device *dev)
 {
 	struct rte_eth_dev *eth_dev = NULL;
 	struct pmd_internals *internals;
+	struct tpacket_req *req;
 	unsigned q;
 
 	RTE_LOG(INFO, PMD, "Closing AF_PACKET ethdev on numa socket %u\n",
@@ -1008,14 +1003,16 @@ rte_pmd_af_packet_remove(struct rte_vdev_device *dev)
 		return -1;
 
 	internals = eth_dev->data->dev_private;
+	req = &internals->req;
 	for (q = 0; q < internals->nb_queues; q++) {
+		munmap(internals->rx_queue[q].map,
+			2 * req->tp_block_size * req->tp_block_nr);
 		rte_free(internals->rx_queue[q].rd);
 		rte_free(internals->tx_queue[q].rd);
 	}
 	free(internals->if_name);
 
 	rte_free(eth_dev->data->dev_private);
-	rte_free(eth_dev->data);
 
 	rte_eth_dev_release_port(eth_dev);
 

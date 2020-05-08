@@ -36,7 +36,6 @@
 #include <rte_malloc.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_filter.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
@@ -118,7 +117,7 @@ int bnxt_mq_rx_configure(struct bnxt *bp)
 				pools = max_pools;
 			break;
 		case ETH_MQ_RX_RSS:
-			pools = bp->rx_cp_nr_rings;
+			pools = 1;
 			break;
 		default:
 			RTE_LOG(ERR, PMD, "Unsupported mq_mod %d\n",
@@ -237,7 +236,8 @@ static void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 	if (rxq) {
 		sw_ring = rxq->rx_ring->rx_buf_ring;
 		if (sw_ring) {
-			for (i = 0; i < rxq->nb_rx_desc; i++) {
+			for (i = 0;
+			     i < rxq->rx_ring->rx_ring_struct->ring_size; i++) {
 				if (sw_ring[i].mbuf) {
 					rte_pktmbuf_free_seg(sw_ring[i].mbuf);
 					sw_ring[i].mbuf = NULL;
@@ -247,7 +247,8 @@ static void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 		/* Free up mbufs in Agg ring */
 		sw_ring = rxq->rx_ring->ag_buf_ring;
 		if (sw_ring) {
-			for (i = 0; i < rxq->nb_rx_desc; i++) {
+			for (i = 0;
+			     i < rxq->rx_ring->ag_ring_struct->ring_size; i++) {
 				if (sw_ring[i].mbuf) {
 					rte_pktmbuf_free_seg(sw_ring[i].mbuf);
 					sw_ring[i].mbuf = NULL;
@@ -370,10 +371,9 @@ bnxt_rx_queue_intr_enable_op(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 
 	if (eth_dev->data->rx_queues) {
 		rxq = eth_dev->data->rx_queues[queue_id];
-		if (!rxq) {
-			rc = -EINVAL;
-			return rc;
-		}
+		if (!rxq)
+			return -EINVAL;
+
 		cpr = rxq->cp_ring;
 		B_CP_DB_ARM(cpr);
 	}
@@ -389,10 +389,9 @@ bnxt_rx_queue_intr_disable_op(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 
 	if (eth_dev->data->rx_queues) {
 		rxq = eth_dev->data->rx_queues[queue_id];
-		if (!rxq) {
-			rc = -EINVAL;
-			return rc;
-		}
+		if (!rxq)
+			return -EINVAL;
+
 		cpr = rxq->cp_ring;
 		B_CP_DB_DISARM(cpr);
 	}

@@ -92,11 +92,10 @@ find_port_id_by_dev_name(const char *name)
 static inline int
 bond_pci_addr_cmp(const struct rte_device *dev, const void *_pci_addr)
 {
-	struct rte_pci_device *pdev;
+	const struct rte_pci_device *pdev = RTE_DEV_TO_PCI_CONST(dev);
 	const struct rte_pci_addr *paddr = _pci_addr;
 
-	pdev = RTE_DEV_TO_PCI(*(struct rte_device **)(void *)&dev);
-	return rte_eal_compare_pci_addr(&pdev->addr, paddr);
+	return rte_pci_addr_cmp(&pdev->addr, paddr);
 }
 
 /**
@@ -273,7 +272,7 @@ bond_ethdev_parse_primary_slave_port_id_kvarg(const char *key __rte_unused,
 	if (primary_slave_port_id < 0)
 		return -1;
 
-	*(uint8_t *)extra_args = (uint8_t)primary_slave_port_id;
+	*(uint16_t *)extra_args = (uint16_t)primary_slave_port_id;
 
 	return 0;
 }

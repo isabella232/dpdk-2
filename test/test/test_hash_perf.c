@@ -49,7 +49,8 @@
 #define MAX_ENTRIES (1 << 19)
 #define KEYS_TO_ADD (MAX_ENTRIES * 3 / 4) /* 75% table utilization */
 #define NUM_LOOKUPS (KEYS_TO_ADD * 5) /* Loop among keys added, several times */
-#define BUCKET_SIZE 4
+/* BUCKET_SIZE should be same as RTE_HASH_BUCKET_ENTRIES in rte_hash library */
+#define BUCKET_SIZE 8
 #define NUM_BUCKETS (MAX_ENTRIES / BUCKET_SIZE)
 #define MAX_KEYSIZE 64
 #define NUM_KEYSIZES 10
@@ -80,22 +81,22 @@ static uint32_t hashtest_key_lens[] = {
 struct rte_hash *h[NUM_KEYSIZES];
 
 /* Array that stores if a slot is full */
-uint8_t slot_taken[MAX_ENTRIES];
+static uint8_t slot_taken[MAX_ENTRIES];
 
 /* Array to store number of cycles per operation */
-uint64_t cycles[NUM_KEYSIZES][NUM_OPERATIONS][2][2];
+static uint64_t cycles[NUM_KEYSIZES][NUM_OPERATIONS][2][2];
 
 /* Array to store all input keys */
-uint8_t keys[KEYS_TO_ADD][MAX_KEYSIZE];
+static uint8_t keys[KEYS_TO_ADD][MAX_KEYSIZE];
 
 /* Array to store the precomputed hash for 'keys' */
-hash_sig_t signatures[KEYS_TO_ADD];
+static hash_sig_t signatures[KEYS_TO_ADD];
 
 /* Array to store how many busy entries have each bucket */
-uint8_t buckets[NUM_BUCKETS];
+static uint8_t buckets[NUM_BUCKETS];
 
 /* Array to store the positions where keys are added */
-int32_t positions[KEYS_TO_ADD];
+static int32_t positions[KEYS_TO_ADD];
 
 /* Parameters used for hash table in unit test functions. */
 static struct rte_hash_parameters ut_params = {
@@ -111,9 +112,11 @@ create_table(unsigned with_data, unsigned table_index)
 
 	if (with_data)
 		/* Table will store 8-byte data */
-		sprintf(name, "test_hash%d_data", hashtest_key_lens[table_index]);
+		snprintf(name, sizeof(name), "test_hash%u_data",
+				hashtest_key_lens[table_index]);
 	else
-		sprintf(name, "test_hash%d", hashtest_key_lens[table_index]);
+		snprintf(name, sizeof(name), "test_hash%u",
+				hashtest_key_lens[table_index]);
 
 	ut_params.name = name;
 	ut_params.key_len = hashtest_key_lens[table_index];

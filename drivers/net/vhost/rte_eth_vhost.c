@@ -117,6 +117,7 @@ struct pmd_internal {
 	char *dev_name;
 	char *iface_name;
 	uint16_t max_queues;
+	int vid;
 	rte_atomic32_t started;
 };
 
@@ -527,6 +528,9 @@ update_queuing_status(struct rte_eth_dev *dev)
 	unsigned int i;
 	int allow_queuing = 1;
 
+	if (!dev->data->rx_queues || !dev->data->tx_queues)
+		return;
+
 	if (rte_atomic32_read(&internal->started) == 0 ||
 	    rte_atomic32_read(&internal->dev_attached) == 0)
 		allow_queuing = 0;
@@ -551,13 +555,36 @@ update_queuing_status(struct rte_eth_dev *dev)
 	}
 }
 
+static void
+queue_setup(struct rte_eth_dev *eth_dev, struct pmd_internal *internal)
+{
+	struct vhost_queue *vq;
+	int i;
+
+	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
+		vq = eth_dev->data->rx_queues[i];
+		if (!vq)
+			continue;
+		vq->vid = internal->vid;
+		vq->internal = internal;
+		vq->port = eth_dev->data->port_id;
+	}
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
+		vq = eth_dev->data->tx_queues[i];
+		if (!vq)
+			continue;
+		vq->vid = internal->vid;
+		vq->internal = internal;
+		vq->port = eth_dev->data->port_id;
+	}
+}
+
 static int
 new_device(int vid)
 {
 	struct rte_eth_dev *eth_dev;
 	struct internal_list *list;
 	struct pmd_internal *internal;
-	struct vhost_queue *vq;
 	unsigned i;
 	char ifname[PATH_MAX];
 #ifdef RTE_LIBRTE_VHOST_NUMA
@@ -580,22 +607,11 @@ new_device(int vid)
 		eth_dev->data->numa_node = newnode;
 #endif
 
-	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
-		vq = eth_dev->data->rx_queues[i];
-		if (vq == NULL)
-			continue;
-		vq->vid = vid;
-		vq->internal = internal;
-		vq->port = eth_dev->data->port_id;
-	}
-	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
-		vq = eth_dev->data->tx_queues[i];
-		if (vq == NULL)
-			continue;
-		vq->vid = vid;
-		vq->internal = internal;
-		vq->port = eth_dev->data->port_id;
-	}
+	internal->vid = vid;
+	if (rte_atomic32_read(&internal->started) == 1)
+		queue_setup(eth_dev, internal);
+	else
+		RTE_LOG(INFO, PMD, "RX/TX queues not exist yet\n");
 
 	for (i = 0; i < rte_vhost_get_vring_num(vid); i++)
 		rte_vhost_enable_guest_notification(vid, i, 0);
@@ -640,17 +656,19 @@ destroy_device(int vid)
 
 	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
 
-	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
-		vq = eth_dev->data->rx_queues[i];
-		if (vq == NULL)
-			continue;
-		vq->vid = -1;
-	}
-	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
-		vq = eth_dev->data->tx_queues[i];
-		if (vq == NULL)
-			continue;
-		vq->vid = -1;
+	if (eth_dev->data->rx_queues && eth_dev->data->tx_queues) {
+		for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
+			vq = eth_dev->data->rx_queues[i];
+			if (!vq)
+				continue;
+			vq->vid = -1;
+		}
+		for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
+			vq = eth_dev->data->tx_queues[i];
+			if (!vq)
+				continue;
+			vq->vid = -1;
+		}
 	}
 
 	state = vring_states[eth_dev->data->port_id];
@@ -687,6 +705,10 @@ vring_state_changed(int vid, uint16_t vring, int enable)
 	/* won't be NULL */
 	state = vring_states[eth_dev->data->port_id];
 	rte_spinlock_lock(&state->lock);
+	if (state->cur[vring] == enable) {
+		rte_spinlock_unlock(&state->lock);
+		return 0;
+	}
 	state->cur[vring] = enable;
 	state->max_vring = RTE_MAX(vring, state->max_vring);
 	rte_spinlock_unlock(&state->lock);
@@ -773,12 +795,13 @@ rte_eth_vhost_get_vid_from_port_id(uint16_t port_id)
 }
 
 static int
-eth_dev_start(struct rte_eth_dev *dev)
+eth_dev_start(struct rte_eth_dev *eth_dev)
 {
-	struct pmd_internal *internal = dev->data->dev_private;
+	struct pmd_internal *internal = eth_dev->data->dev_private;
 
+	queue_setup(eth_dev, internal);
 	rte_atomic32_set(&internal->started, 1);
-	update_queuing_status(dev);
+	update_queuing_status(eth_dev);
 
 	return 0;
 }
@@ -816,10 +839,13 @@ eth_dev_close(struct rte_eth_dev *dev)
 	pthread_mutex_unlock(&internal_list_lock);
 	rte_free(list);
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++)
-		rte_free(dev->data->rx_queues[i]);
-	for (i = 0; i < dev->data->nb_tx_queues; i++)
-		rte_free(dev->data->tx_queues[i]);
+	if (dev->data->rx_queues)
+		for (i = 0; i < dev->data->nb_rx_queues; i++)
+			rte_free(dev->data->rx_queues[i]);
+
+	if (dev->data->tx_queues)
+		for (i = 0; i < dev->data->nb_tx_queues; i++)
+			rte_free(dev->data->tx_queues[i]);
 
 	rte_free(dev->data->mac_addrs);
 	free(internal->dev_name);
@@ -1019,7 +1045,7 @@ eth_dev_vhost_create(struct rte_vdev_device *dev, char *iface_name,
 	int16_t queues, const unsigned int numa_node, uint64_t flags)
 {
 	const char *name = rte_vdev_device_name(dev);
-	struct rte_eth_dev_data *data = NULL;
+	struct rte_eth_dev_data *data;
 	struct pmd_internal *internal = NULL;
 	struct rte_eth_dev *eth_dev = NULL;
 	struct ether_addr *eth_addr = NULL;
@@ -1028,13 +1054,6 @@ eth_dev_vhost_create(struct rte_vdev_device *dev, char *iface_name,
 
 	RTE_LOG(INFO, PMD, "Creating VHOST-USER backend on numa socket %u\n",
 		numa_node);
-
-	/* now do all data allocation - for eth_dev structure and internal
-	 * (private) data
-	 */
-	data = rte_zmalloc_socket(name, sizeof(*data), 0, numa_node);
-	if (data == NULL)
-		goto error;
 
 	list = rte_zmalloc_socket(name, sizeof(*list), 0, numa_node);
 	if (list == NULL)
@@ -1077,15 +1096,11 @@ eth_dev_vhost_create(struct rte_vdev_device *dev, char *iface_name,
 	rte_spinlock_init(&vring_state->lock);
 	vring_states[eth_dev->data->port_id] = vring_state;
 
-	/* We'll replace the 'data' originally allocated by eth_dev. So the
-	 * vhost PMD resources won't be shared between multi processes.
-	 */
-	rte_memcpy(data, eth_dev->data, sizeof(*data));
-	eth_dev->data = data;
-
+	data = eth_dev->data;
 	data->nb_rx_queues = queues;
 	data->nb_tx_queues = queues;
 	internal->max_queues = queues;
+	internal->vid = -1;
 	data->dev_link = pmd_link;
 	data->mac_addrs = eth_addr;
 	data->dev_flags = RTE_ETH_DEV_INTR_LSC;
@@ -1123,7 +1138,6 @@ error:
 		rte_eth_dev_release_port(eth_dev);
 	rte_free(internal);
 	rte_free(list);
-	rte_free(data);
 
 	return -1;
 }
@@ -1254,8 +1268,6 @@ rte_pmd_vhost_remove(struct rte_vdev_device *dev)
 	rte_free(vring_states[eth_dev->data->port_id]);
 	vring_states[eth_dev->data->port_id] = NULL;
 
-	rte_free(eth_dev->data);
-
 	rte_eth_dev_release_port(eth_dev);
 
 	return 0;
@@ -1270,4 +1282,7 @@ RTE_PMD_REGISTER_VDEV(net_vhost, pmd_vhost_drv);
 RTE_PMD_REGISTER_ALIAS(net_vhost, eth_vhost);
 RTE_PMD_REGISTER_PARAM_STRING(net_vhost,
 	"iface=<ifc> "
-	"queues=<int>");
+	"queues=<int> "
+	"client=<0|1> "
+	"dequeue-zero-copy=<0|1> "
+	"iommu-support=<0|1>");

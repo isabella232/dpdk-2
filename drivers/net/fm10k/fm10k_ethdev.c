@@ -54,7 +54,7 @@
 /* Wait interval to get switch status */
 #define WAIT_SWITCH_MSG_US    100000
 /* A period of quiescence for switch */
-#define FM10K_SWITCH_QUIESCE_US 10000
+#define FM10K_SWITCH_QUIESCE_US 100000
 /* Number of chars per uint32 type */
 #define CHARS_PER_UINT32 (sizeof(uint32_t))
 #define BIT_MASK_PER_UINT32 ((1 << CHARS_PER_UINT32) - 1)
@@ -482,11 +482,6 @@ fm10k_dev_configure(struct rte_eth_dev *dev)
 
 	return 0;
 }
-
-/* fls = find last set bit = 32 minus the number of leading zeros */
-#ifndef fls
-#define fls(x) (((x) == 0) ? 0 : (32 - __builtin_clz((x))))
-#endif
 
 static void
 fm10k_dev_vmdq_rx_configure(struct rte_eth_dev *dev)
@@ -1061,8 +1056,8 @@ fm10k_dev_dglort_map_configure(struct rte_eth_dev *dev)
 
 	macvlan = FM10K_DEV_PRIVATE_TO_MACVLAN(dev->data->dev_private);
 	nb_queue_pools = macvlan->nb_queue_pools;
-	pool_len = nb_queue_pools ? fls(nb_queue_pools - 1) : 0;
-	rss_len = fls(dev->data->nb_rx_queues - 1) - pool_len;
+	pool_len = nb_queue_pools ? rte_fls_u32(nb_queue_pools - 1) : 0;
+	rss_len = rte_fls_u32(dev->data->nb_rx_queues - 1) - pool_len;
 
 	/* GLORT 0x0-0x3F are used by PF and VMDQ,  0x40-0x7F used by FD */
 	dglortdec = (rss_len << FM10K_DGLORTDEC_RSSLENGTH_SHIFT) | pool_len;
@@ -1073,7 +1068,7 @@ fm10k_dev_dglort_map_configure(struct rte_eth_dev *dev)
 	FM10K_WRITE_REG(hw, FM10K_DGLORTDEC(0), dglortdec);
 
 	/* Flow Director configurations, only queue number is valid. */
-	dglortdec = fls(dev->data->nb_rx_queues - 1);
+	dglortdec = rte_fls_u32(dev->data->nb_rx_queues - 1);
 	dglortmask = (GLORT_FD_MASK << FM10K_DGLORTMAP_MASK_SHIFT) |
 			(hw->mac.dglort_map + GLORT_FD_Q_BASE);
 	FM10K_WRITE_REG(hw, FM10K_DGLORTMAP(1), dglortmask);
@@ -1242,7 +1237,7 @@ fm10k_dev_close(struct rte_eth_dev *dev)
 		MAX_LPORT_NUM, false);
 	fm10k_mbx_unlock(hw);
 
-	/* allow 10ms for device to quiesce */
+	/* allow 100ms for device to quiesce */
 	rte_delay_us(FM10K_SWITCH_QUIESCE_US);
 
 	/* Stop mailbox service first */
@@ -2992,6 +2987,7 @@ fm10k_params_init(struct rte_eth_dev *dev)
 	hw->bus.payload = fm10k_bus_payload_256;
 
 	info->rx_vec_allowed = true;
+	info->sm_down = false;
 }
 
 static int

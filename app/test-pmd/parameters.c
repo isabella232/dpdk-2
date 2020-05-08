@@ -168,8 +168,8 @@ usage(char* progname)
 	printf("  --disable-hw-vlan-extend: disable hardware vlan extend.\n");
 	printf("  --enable-drop-en: enable per queue packet drop.\n");
 	printf("  --disable-rss: disable rss.\n");
-	printf("  --port-topology=N: set port topology (N: paired (default) or "
-	       "chained).\n");
+	printf("  --port-topology=<paired|chained|loop>: set port topology (paired "
+	       "is default).\n");
 	printf("  --forward-mode=N: set forwarding mode (N: %s).\n",
 	       list_pkt_forwarding_modes());
 	printf("  --rss-ip: set RSS functions to IPv4/IPv6 only .\n");
@@ -403,7 +403,6 @@ parse_portnuma_config(const char *q_arg)
 	};
 	unsigned long int_fld[_NUM_FLD];
 	char *str_fld[_NUM_FLD];
-	portid_t pid;
 
 	/* reset from value set at definition */
 	while ((p = strchr(p0,'(')) != NULL) {
@@ -427,16 +426,16 @@ parse_portnuma_config(const char *q_arg)
 		port_id = (portid_t)int_fld[FLD_PORT];
 		if (port_id_is_invalid(port_id, ENABLED_WARN) ||
 			port_id == (portid_t)RTE_PORT_ALL) {
-			printf("Valid port range is [0");
-			RTE_ETH_FOREACH_DEV(pid)
-				printf(", %d", pid);
-			printf("]\n");
+			print_valid_ports();
 			return -1;
 		}
 		socket_id = (uint8_t)int_fld[FLD_SOCKET];
 		if (new_socket_id(socket_id)) {
-			print_invalid_socket_id_error();
-			return -1;
+			if (num_sockets >= RTE_MAX_NUMA_NODES) {
+				print_invalid_socket_id_error();
+				return -1;
+			}
+			socket_ids[num_sockets++] = socket_id;
 		}
 		port_numa[port_id] = socket_id;
 	}
@@ -461,7 +460,6 @@ parse_ringnuma_config(const char *q_arg)
 	};
 	unsigned long int_fld[_NUM_FLD];
 	char *str_fld[_NUM_FLD];
-	portid_t pid;
 	#define RX_RING_ONLY 0x1
 	#define TX_RING_ONLY 0x2
 	#define RXTX_RING    0x3
@@ -488,16 +486,16 @@ parse_ringnuma_config(const char *q_arg)
 		port_id = (portid_t)int_fld[FLD_PORT];
 		if (port_id_is_invalid(port_id, ENABLED_WARN) ||
 			port_id == (portid_t)RTE_PORT_ALL) {
-			printf("Valid port range is [0");
-			RTE_ETH_FOREACH_DEV(pid)
-				printf(", %d", pid);
-			printf("]\n");
+			print_valid_ports();
 			return -1;
 		}
 		socket_id = (uint8_t)int_fld[FLD_SOCKET];
 		if (new_socket_id(socket_id)) {
-			print_invalid_socket_id_error();
-			return -1;
+			if (num_sockets >= RTE_MAX_NUMA_NODES) {
+				print_invalid_socket_id_error();
+				return -1;
+			}
+			socket_ids[num_sockets++] = socket_id;
 		}
 		ring_flag = (uint8_t)int_fld[FLD_FLAG];
 		if ((ring_flag < RX_RING_ONLY) || (ring_flag > RXTX_RING)) {
@@ -565,6 +563,7 @@ launch_args_parse(int argc, char** argv)
 	int n, opt;
 	char **argvopt;
 	int opt_idx;
+	portid_t pid;
 	enum { TX, RX };
 
 	static struct option lgopts[] = {
@@ -951,21 +950,21 @@ launch_args_parse(int argc, char** argv)
 				rss_hf = ETH_RSS_UDP;
 			if (!strcmp(lgopts[opt_idx].name, "rxq")) {
 				n = atoi(optarg);
-				if (n >= 0 && n <= (int) MAX_QUEUE_ID)
+				if (n >= 0 && check_nb_rxq((queueid_t)n) == 0)
 					nb_rxq = (queueid_t) n;
 				else
 					rte_exit(EXIT_FAILURE, "rxq %d invalid - must be"
-						  " >= 0 && <= %d\n", n,
-						  (int) MAX_QUEUE_ID);
+						  " >= 0 && <= %u\n", n,
+						  get_allowed_max_nb_rxq(&pid));
 			}
 			if (!strcmp(lgopts[opt_idx].name, "txq")) {
 				n = atoi(optarg);
-				if (n >= 0 && n <= (int) MAX_QUEUE_ID)
+				if (n >= 0 && check_nb_txq((queueid_t)n) == 0)
 					nb_txq = (queueid_t) n;
 				else
 					rte_exit(EXIT_FAILURE, "txq %d invalid - must be"
-						  " >= 0 && <= %d\n", n,
-						  (int) MAX_QUEUE_ID);
+						  " >= 0 && <= %u\n", n,
+						  get_allowed_max_nb_txq(&pid));
 			}
 			if (!nb_rxq && !nb_txq) {
 				rte_exit(EXIT_FAILURE, "Either rx or tx queues should "

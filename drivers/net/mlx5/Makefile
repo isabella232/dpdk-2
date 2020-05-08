@@ -83,7 +83,11 @@ endif
 
 # User-defined CFLAGS.
 ifeq ($(CONFIG_RTE_LIBRTE_MLX5_DEBUG),y)
-CFLAGS += -pedantic -UNDEBUG -DPEDANTIC
+CFLAGS += -pedantic -UNDEBUG
+ifneq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
+CFLAGS += -DPEDANTIC
+endif
+AUTO_CONFIG_CFLAGS += -Wno-pedantic
 else
 CFLAGS += -DNDEBUG -UPEDANTIC
 endif
@@ -97,7 +101,7 @@ include $(RTE_SDK)/mk/rte.lib.mk
 # Generate and clean-up mlx5_autoconf.h.
 
 export CC CFLAGS CPPFLAGS EXTRA_CFLAGS EXTRA_CPPFLAGS
-export AUTO_CONFIG_CFLAGS = -Wno-error
+export AUTO_CONFIG_CFLAGS += -Wno-error
 
 ifndef V
 AUTOCONF_OUTPUT := >/dev/null
@@ -145,7 +149,52 @@ mlx5_autoconf.h.new: $(RTE_SDK)/buildtools/auto-config-h.sh
 	$Q sh -- '$<' '$@' \
 		HAVE_IBV_DEVICE_COUNTERS_SET_SUPPORT \
 		infiniband/verbs.h \
-		enum IBV_FLOW_SPEC_ACTION_COUNT \
+		type 'struct ibv_counter_set_init_attr' \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_SUPPORTED_40000baseKR4_Full \
+		/usr/include/linux/ethtool.h \
+		define SUPPORTED_40000baseKR4_Full \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_SUPPORTED_40000baseCR4_Full \
+		/usr/include/linux/ethtool.h \
+		define SUPPORTED_40000baseCR4_Full \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_SUPPORTED_40000baseSR4_Full \
+		/usr/include/linux/ethtool.h \
+		define SUPPORTED_40000baseSR4_Full \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_SUPPORTED_40000baseLR4_Full \
+		/usr/include/linux/ethtool.h \
+		define SUPPORTED_40000baseLR4_Full \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_SUPPORTED_56000baseKR4_Full \
+		/usr/include/linux/ethtool.h \
+		define SUPPORTED_56000baseKR4_Full \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_SUPPORTED_56000baseCR4_Full \
+		/usr/include/linux/ethtool.h \
+		define SUPPORTED_56000baseCR4_Full \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_SUPPORTED_56000baseSR4_Full \
+		/usr/include/linux/ethtool.h \
+		define SUPPORTED_56000baseSR4_Full \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_SUPPORTED_56000baseLR4_Full \
+		/usr/include/linux/ethtool.h \
+		define SUPPORTED_56000baseLR4_Full \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_STATIC_ASSERT \
+		/usr/include/assert.h \
+		define static_assert \
 		$(AUTOCONF_OUTPUT)
 
 # Create mlx5_autoconf.h or update it in case it differs from the new one.

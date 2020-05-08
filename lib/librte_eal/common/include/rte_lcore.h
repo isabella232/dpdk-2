@@ -40,6 +40,7 @@
  * API for lcore and socket manipulation
  *
  */
+#include <rte_config.h>
 #include <rte_per_lcore.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
@@ -135,7 +136,7 @@ rte_lcore_index(int lcore_id)
 	if (lcore_id >= RTE_MAX_LCORE)
 		return -1;
 	if (lcore_id < 0)
-		lcore_id = rte_lcore_id();
+		lcore_id = (int)rte_lcore_id();
 	return lcore_config[lcore_id].core_index;
 }
 

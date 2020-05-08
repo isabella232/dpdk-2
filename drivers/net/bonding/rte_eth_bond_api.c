@@ -48,7 +48,10 @@ int
 check_for_bonded_ethdev(const struct rte_eth_dev *eth_dev)
 {
 	/* Check valid pointer */
-	if (eth_dev->device->driver->name == NULL)
+	if (eth_dev == NULL ||
+		eth_dev->device == NULL ||
+		eth_dev->device->driver == NULL ||
+		eth_dev->device->driver->name == NULL)
 		return -1;
 
 	/* return 0 if driver name matches */
@@ -60,6 +63,25 @@ valid_bonded_port_id(uint16_t port_id)
 {
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -1);
 	return check_for_bonded_ethdev(&rte_eth_devices[port_id]);
+}
+
+int
+check_for_master_bonded_ethdev(const struct rte_eth_dev *eth_dev)
+{
+	int i;
+	struct bond_dev_private *internals;
+
+	if (check_for_bonded_ethdev(eth_dev) != 0)
+		return 0;
+
+	internals = eth_dev->data->dev_private;
+
+	/* Check if any of slave devices is a bonded device */
+	for (i = 0; i < internals->slave_count; i++)
+		if (valid_bonded_port_id(internals->slaves[i].port_id) == 0)
+			return 1;
+
+	return 0;
 }
 
 int
@@ -135,6 +157,12 @@ deactivate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id)
 
 	RTE_ASSERT(active_count < RTE_DIM(internals->active_slaves));
 	internals->active_slave_count = active_count;
+
+	/* Resetting active_slave when reaches to max
+	 * no of slaves in active list
+	 */
+	if (internals->active_slave >= active_count)
+		internals->active_slave = 0;
 
 	if (eth_dev->data->dev_started) {
 		if (internals->mode == BONDING_MODE_8023AD) {
@@ -221,9 +249,12 @@ slave_vlan_filter_set(uint16_t bonded_port_id, uint16_t slave_port_id)
 		for (i = 0, mask = 1;
 		     i < RTE_BITMAP_SLAB_BIT_SIZE;
 		     i ++, mask <<= 1) {
-			if (unlikely(slab & mask))
+			if (unlikely(slab & mask)) {
+				uint16_t vlan_id = pos + i;
+
 				res = rte_eth_dev_vlan_filter(slave_port_id,
-							      (uint16_t)pos, 1);
+							      vlan_id, 1);
+			}
 		}
 		found = rte_bitmap_scan(internals->vlan_filter_bmp,
 					&pos, &slab);
@@ -272,8 +303,13 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 	if (internals->slave_count < 1) {
 		/* if MAC is not user defined then use MAC of first slave add to
 		 * bonded device */
-		if (!internals->user_defined_mac)
-			mac_address_set(bonded_eth_dev, slave_eth_dev->data->mac_addrs);
+		if (!internals->user_defined_mac) {
+			if (mac_address_set(bonded_eth_dev,
+					    slave_eth_dev->data->mac_addrs)) {
+				RTE_BOND_LOG(ERR, "Failed to set MAC address");
+				return -1;
+			}
+		}
 
 		/* Inherit eth dev link properties from first slave */
 		link_properties_set(bonded_eth_dev,
@@ -434,7 +470,7 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 			&rte_eth_devices[bonded_port_id].data->port_id);
 
 	/* Restore original MAC address of slave device */
-	mac_address_set(&rte_eth_devices[slave_port_id],
+	rte_eth_dev_default_mac_addr_set(slave_port_id,
 			&(internals->slaves[slave_idx].persisted_mac_addr));
 
 	slave_eth_dev = &rte_eth_devices[slave_port_id];
@@ -496,10 +532,18 @@ rte_eth_bond_slave_remove(uint16_t bonded_port_id, uint16_t slave_port_id)
 int
 rte_eth_bond_mode_set(uint16_t bonded_port_id, uint8_t mode)
 {
+	struct rte_eth_dev *bonded_eth_dev;
+
 	if (valid_bonded_port_id(bonded_port_id) != 0)
 		return -1;
 
-	return bond_ethdev_mode_set(&rte_eth_devices[bonded_port_id], mode);
+	bonded_eth_dev = &rte_eth_devices[bonded_port_id];
+
+	if (check_for_master_bonded_ethdev(bonded_eth_dev) != 0 &&
+			mode == BONDING_MODE_8023AD)
+		return -1;
+
+	return bond_ethdev_mode_set(bonded_eth_dev, mode);
 }
 
 int
@@ -640,9 +684,21 @@ rte_eth_bond_mac_address_reset(uint16_t bonded_port_id)
 	internals->user_defined_mac = 0;
 
 	if (internals->slave_count > 0) {
+		int slave_port;
+		/* Get the primary slave location based on the primary port
+		 * number as, while slave_add(), we will keep the primary
+		 * slave based on slave_count,but not based on the primary port.
+		 */
+		for (slave_port = 0; slave_port < internals->slave_count;
+		     slave_port++) {
+			if (internals->slaves[slave_port].port_id ==
+			    internals->primary_port)
+				break;
+		}
+
 		/* Set MAC Address of Bonded Device */
 		if (mac_address_set(bonded_eth_dev,
-				&internals->slaves[internals->primary_port].persisted_mac_addr)
+			&internals->slaves[slave_port].persisted_mac_addr)
 				!= 0) {
 			RTE_BOND_LOG(ERR, "Failed to set MAC address on bonded device");
 			return -1;

@@ -58,20 +58,22 @@ struct virtio_net *vhost_devices[MAX_VHOST_DEVICE];
 /* Called with iotlb_lock read-locked */
 uint64_t
 __vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
-		    uint64_t iova, uint64_t size, uint8_t perm)
+		    uint64_t iova, uint64_t *size, uint8_t perm)
 {
 	uint64_t vva, tmp_size;
 
-	if (unlikely(!size))
+	if (unlikely(!*size))
 		return 0;
 
-	tmp_size = size;
+	tmp_size = *size;
 
 	vva = vhost_user_iotlb_cache_find(vq, iova, &tmp_size, perm);
-	if (tmp_size == size)
+	if (tmp_size == *size)
 		return vva;
 
-	if (!vhost_user_iotlb_pending_miss(vq, iova + tmp_size, perm)) {
+	iova += tmp_size;
+
+	if (!vhost_user_iotlb_pending_miss(vq, iova, perm)) {
 		/*
 		 * iotlb_lock is read-locked for a full burst,
 		 * but it only protects the iotlb cache.
@@ -81,8 +83,13 @@ __vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		 */
 		vhost_user_iotlb_rd_unlock(vq);
 
-		vhost_user_iotlb_pending_insert(vq, iova + tmp_size, perm);
-		vhost_user_iotlb_miss(dev, iova + tmp_size, perm);
+		vhost_user_iotlb_pending_insert(vq, iova, perm);
+		if (vhost_user_iotlb_miss(dev, iova, perm)) {
+			RTE_LOG(ERR, VHOST_CONFIG,
+				"IOTLB miss req failed for IOVA 0x%" PRIx64 "\n",
+				iova);
+			vhost_user_iotlb_pending_remove(vq, iova, 1, perm);
+		}
 
 		vhost_user_iotlb_rd_lock(vq);
 	}
@@ -101,6 +108,180 @@ get_device(int vid)
 	}
 
 	return dev;
+}
+
+#define VHOST_LOG_PAGE	4096
+
+/*
+ * Atomically set a bit in memory.
+ */
+static __rte_always_inline void
+vhost_set_bit(unsigned int nr, volatile uint8_t *addr)
+{
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION < 70100)
+	/*
+	 * __sync_ built-ins are deprecated, but __atomic_ ones
+	 * are sub-optimized in older GCC versions.
+	 */
+	__sync_fetch_and_or_1(addr, (1U << nr));
+#else
+	__atomic_fetch_or(addr, (1U << nr), __ATOMIC_RELAXED);
+#endif
+}
+
+static __rte_always_inline void
+vhost_log_page(uint8_t *log_base, uint64_t page)
+{
+	vhost_set_bit(page % 8, &log_base[page / 8]);
+}
+
+void
+__vhost_log_write(struct virtio_net *dev, uint64_t addr, uint64_t len)
+{
+	uint64_t page;
+
+	if (unlikely(!dev->log_base || !len))
+		return;
+
+	if (unlikely(dev->log_size <= ((addr + len - 1) / VHOST_LOG_PAGE / 8)))
+		return;
+
+	/* To make sure guest memory updates are committed before logging */
+	rte_smp_wmb();
+
+	page = addr / VHOST_LOG_PAGE;
+	while (page * VHOST_LOG_PAGE < addr + len) {
+		vhost_log_page((uint8_t *)(uintptr_t)dev->log_base, page);
+		page += 1;
+	}
+}
+
+void
+__vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			     uint64_t iova, uint64_t len)
+{
+	uint64_t hva, gpa, map_len;
+	map_len = len;
+
+	hva = __vhost_iova_to_vva(dev, vq, iova, &map_len, VHOST_ACCESS_RW);
+	if (map_len != len) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"Failed to write log for IOVA 0x%" PRIx64 ". No IOTLB entry found\n",
+			iova);
+		return;
+	}
+
+	gpa = hva_to_gpa(dev, hva, len);
+	if (gpa)
+		__vhost_log_write(dev, gpa, len);
+}
+
+void
+__vhost_log_cache_sync(struct virtio_net *dev, struct vhost_virtqueue *vq)
+{
+	unsigned long *log_base;
+	int i;
+
+	if (unlikely(!dev->log_base))
+		return;
+
+	log_base = (unsigned long *)(uintptr_t)dev->log_base;
+
+	/*
+	 * It is expected a write memory barrier has been issued
+	 * before this function is called.
+	 */
+
+	for (i = 0; i < vq->log_cache_nb_elem; i++) {
+		struct log_cache_entry *elem = vq->log_cache + i;
+
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION < 70100)
+		/*
+		 * '__sync' builtins are deprecated, but '__atomic' ones
+		 * are sub-optimized in older GCC versions.
+		 */
+		__sync_fetch_and_or(log_base + elem->offset, elem->val);
+#else
+		__atomic_fetch_or(log_base + elem->offset, elem->val,
+				__ATOMIC_RELAXED);
+#endif
+	}
+
+	rte_smp_wmb();
+
+	vq->log_cache_nb_elem = 0;
+}
+
+static __rte_always_inline void
+vhost_log_cache_page(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			uint64_t page)
+{
+	uint32_t bit_nr = page % (sizeof(unsigned long) << 3);
+	uint32_t offset = page / (sizeof(unsigned long) << 3);
+	int i;
+
+	for (i = 0; i < vq->log_cache_nb_elem; i++) {
+		struct log_cache_entry *elem = vq->log_cache + i;
+
+		if (elem->offset == offset) {
+			elem->val |= (1UL << bit_nr);
+			return;
+		}
+	}
+
+	if (unlikely(i >= VHOST_LOG_CACHE_NR)) {
+		/*
+		 * No more room for a new log cache entry,
+		 * so write the dirty log map directly.
+		 */
+		rte_smp_wmb();
+		vhost_log_page((uint8_t *)(uintptr_t)dev->log_base, page);
+
+		return;
+	}
+
+	vq->log_cache[i].offset = offset;
+	vq->log_cache[i].val = (1UL << bit_nr);
+	vq->log_cache_nb_elem++;
+}
+
+void
+__vhost_log_cache_write(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			uint64_t addr, uint64_t len)
+{
+	uint64_t page;
+
+	if (unlikely(!dev->log_base || !len))
+		return;
+
+	if (unlikely(dev->log_size <= ((addr + len - 1) / VHOST_LOG_PAGE / 8)))
+		return;
+
+	page = addr / VHOST_LOG_PAGE;
+	while (page * VHOST_LOG_PAGE < addr + len) {
+		vhost_log_cache_page(dev, vq, page);
+		page += 1;
+	}
+}
+
+void
+__vhost_log_cache_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			     uint64_t iova, uint64_t len)
+{
+	uint64_t hva, gpa, map_len;
+	map_len = len;
+
+	hva = __vhost_iova_to_vva(dev, vq, iova, &map_len, VHOST_ACCESS_RW);
+	if (map_len != len) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"Failed to write log for IOVA 0x%" PRIx64 ". No IOTLB entry found\n",
+			iova);
+		return;
+	}
+
+	gpa = hva_to_gpa(dev, hva, len);
+	if (gpa)
+		__vhost_log_cache_write(dev, vq, gpa, len);
 }
 
 static void
@@ -151,35 +332,41 @@ free_device(struct virtio_net *dev)
 int
 vring_translate(struct virtio_net *dev, struct vhost_virtqueue *vq)
 {
-	uint64_t size;
+	uint64_t req_size, size;
 
 	if (!(dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM)))
-		goto out;
+		return -1;
 
-	size = sizeof(struct vring_desc) * vq->size;
+	req_size = sizeof(struct vring_desc) * vq->size;
+	size = req_size;
 	vq->desc = (struct vring_desc *)(uintptr_t)vhost_iova_to_vva(dev, vq,
 						vq->ring_addrs.desc_user_addr,
-						size, VHOST_ACCESS_RW);
-	if (!vq->desc)
+						&size, VHOST_ACCESS_RW);
+	if (!vq->desc || size != req_size)
 		return -1;
 
-	size = sizeof(struct vring_avail);
-	size += sizeof(uint16_t) * vq->size;
+	req_size = sizeof(struct vring_avail);
+	req_size += sizeof(uint16_t) * vq->size;
+	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))
+		req_size += sizeof(uint16_t);
+	size = req_size;
 	vq->avail = (struct vring_avail *)(uintptr_t)vhost_iova_to_vva(dev, vq,
 						vq->ring_addrs.avail_user_addr,
-						size, VHOST_ACCESS_RW);
-	if (!vq->avail)
+						&size, VHOST_ACCESS_RW);
+	if (!vq->avail || size != req_size)
 		return -1;
 
-	size = sizeof(struct vring_used);
-	size += sizeof(struct vring_used_elem) * vq->size;
+	req_size = sizeof(struct vring_used);
+	req_size += sizeof(struct vring_used_elem) * vq->size;
+	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))
+		req_size += sizeof(uint16_t);
+	size = req_size;
 	vq->used = (struct vring_used *)(uintptr_t)vhost_iova_to_vva(dev, vq,
 						vq->ring_addrs.used_user_addr,
-						size, VHOST_ACCESS_RW);
-	if (!vq->used)
+						&size, VHOST_ACCESS_RW);
+	if (!vq->used || size != req_size)
 		return -1;
 
-out:
 	vq->access_ok = 1;
 
 	return 0;
@@ -195,6 +382,7 @@ vring_invalidate(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	vq->desc = NULL;
 	vq->avail = NULL;
 	vq->used = NULL;
+	vq->log_guest_addr = 0;
 
 	if (dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM))
 		vhost_user_iotlb_wr_unlock(vq);
@@ -259,6 +447,7 @@ alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx)
 
 	dev->virtqueue[vring_idx] = vq;
 	init_vring_queue(dev, vring_idx);
+	rte_spinlock_init(&vq->access_lock);
 
 	dev->nr_vring += 1;
 
@@ -524,22 +713,32 @@ rte_vhost_avail_entries(int vid, uint16_t queue_id)
 {
 	struct virtio_net *dev;
 	struct vhost_virtqueue *vq;
+	uint16_t ret = 0;
 
 	dev = get_device(vid);
 	if (!dev)
 		return 0;
 
 	vq = dev->virtqueue[queue_id];
-	if (!vq->enabled)
-		return 0;
 
-	return *(volatile uint16_t *)&vq->avail->idx - vq->last_used_idx;
+	rte_spinlock_lock(&vq->access_lock);
+
+	if (unlikely(!vq->enabled || vq->avail == NULL))
+		goto out;
+
+	ret = *(volatile uint16_t *)&vq->avail->idx - vq->last_used_idx;
+
+out:
+	rte_spinlock_unlock(&vq->access_lock);
+	return ret;
 }
 
 int
 rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable)
 {
 	struct virtio_net *dev = get_device(vid);
+	struct vhost_virtqueue *vq;
+	int ret = 0;
 
 	if (dev == NULL)
 		return -1;
@@ -550,8 +749,21 @@ rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable)
 		return -1;
 	}
 
+	vq = dev->virtqueue[queue_id];
+
+	rte_spinlock_lock(&vq->access_lock);
+
+	if (vq->used == NULL) {
+		ret = -1;
+		goto out;
+	}
+
 	dev->virtqueue[queue_id]->used->flags = VRING_USED_F_NO_NOTIFY;
-	return 0;
+
+out:
+	rte_spinlock_unlock(&vq->access_lock);
+
+	return ret;
 }
 
 void
@@ -590,6 +802,7 @@ rte_vhost_rx_queue_count(int vid, uint16_t qid)
 {
 	struct virtio_net *dev;
 	struct vhost_virtqueue *vq;
+	uint32_t ret = 0;
 
 	dev = get_device(vid);
 	if (dev == NULL)
@@ -605,8 +818,14 @@ rte_vhost_rx_queue_count(int vid, uint16_t qid)
 	if (vq == NULL)
 		return 0;
 
-	if (unlikely(vq->enabled == 0 || vq->avail == NULL))
-		return 0;
+	rte_spinlock_lock(&vq->access_lock);
 
-	return *((volatile uint16_t *)&vq->avail->idx) - vq->last_avail_idx;
+	if (unlikely(vq->enabled == 0 || vq->avail == NULL))
+		goto out;
+
+	ret = *((volatile uint16_t *)&vq->avail->idx) - vq->last_avail_idx;
+
+out:
+	rte_spinlock_unlock(&vq->access_lock);
+	return ret;
 }

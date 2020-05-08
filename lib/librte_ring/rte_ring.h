@@ -96,6 +96,7 @@ extern "C" {
 #include <sys/queue.h>
 #include <errno.h>
 #include <rte_common.h>
+#include <rte_config.h>
 #include <rte_memory.h>
 #include <rte_lcore.h>
 #include <rte_atomic.h>
@@ -111,7 +112,7 @@ enum rte_ring_queue_behavior {
 };
 
 #define RTE_RING_MZ_PREFIX "RG_"
-/**< The maximum length of a ring name. */
+/** The maximum length of a ring name. */
 #define RTE_RING_NAMESIZE (RTE_MEMZONE_NAMESIZE - \
 			   sizeof(RTE_RING_MZ_PREFIX) + 1)
 
@@ -395,7 +396,7 @@ update_tail(struct rte_ring_headtail *ht, uint32_t old_val, uint32_t new_val,
  *   If behavior == RTE_RING_QUEUE_FIXED, this will be 0 or n only.
  */
 static __rte_always_inline unsigned int
-__rte_ring_move_prod_head(struct rte_ring *r, int is_sp,
+__rte_ring_move_prod_head(struct rte_ring *r, unsigned int is_sp,
 		unsigned int n, enum rte_ring_queue_behavior behavior,
 		uint32_t *old_head, uint32_t *new_head,
 		uint32_t *free_entries)
@@ -415,14 +416,13 @@ __rte_ring_move_prod_head(struct rte_ring *r, int is_sp,
 		 */
 		rte_smp_rmb();
 
-		const uint32_t cons_tail = r->cons.tail;
 		/*
 		 *  The subtraction is done between two unsigned 32bits value
 		 * (the result is always modulo 32 bits even if we have
 		 * *old_head > cons_tail). So 'free_entries' is always between 0
 		 * and capacity (which is < size).
 		 */
-		*free_entries = (capacity + cons_tail - *old_head);
+		*free_entries = (capacity + r->cons.tail - *old_head);
 
 		/* check that we have enough room in ring */
 		if (unlikely(n > *free_entries))
@@ -465,7 +465,7 @@ __rte_ring_move_prod_head(struct rte_ring *r, int is_sp,
 static __rte_always_inline unsigned int
 __rte_ring_do_enqueue(struct rte_ring *r, void * const *obj_table,
 		 unsigned int n, enum rte_ring_queue_behavior behavior,
-		 int is_sp, unsigned int *free_space)
+		 unsigned int is_sp, unsigned int *free_space)
 {
 	uint32_t prod_head, prod_next;
 	uint32_t free_entries;
@@ -509,7 +509,7 @@ end:
  *     If behavior == RTE_RING_QUEUE_FIXED, this will be 0 or n only.
  */
 static __rte_always_inline unsigned int
-__rte_ring_move_cons_head(struct rte_ring *r, int is_sc,
+__rte_ring_move_cons_head(struct rte_ring *r, unsigned int is_sc,
 		unsigned int n, enum rte_ring_queue_behavior behavior,
 		uint32_t *old_head, uint32_t *new_head,
 		uint32_t *entries)
@@ -529,12 +529,11 @@ __rte_ring_move_cons_head(struct rte_ring *r, int is_sc,
 		 */
 		rte_smp_rmb();
 
-		const uint32_t prod_tail = r->prod.tail;
 		/* The subtraction is done between two unsigned 32bits value
 		 * (the result is always modulo 32 bits even if we have
 		 * cons_head > prod_tail). So 'entries' is always between 0
 		 * and size(ring)-1. */
-		*entries = (prod_tail - *old_head);
+		*entries = (r->prod.tail - *old_head);
 
 		/* Set the actual entries for dequeue */
 		if (n > *entries)
@@ -544,11 +543,14 @@ __rte_ring_move_cons_head(struct rte_ring *r, int is_sc,
 			return 0;
 
 		*new_head = *old_head + n;
-		if (is_sc)
-			r->cons.head = *new_head, success = 1;
-		else
+		if (is_sc) {
+			r->cons.head = *new_head;
+			rte_smp_rmb();
+			success = 1;
+		} else {
 			success = rte_atomic32_cmpset(&r->cons.head, *old_head,
 					*new_head);
+		}
 	} while (unlikely(success == 0));
 	return n;
 }
@@ -576,12 +578,12 @@ __rte_ring_move_cons_head(struct rte_ring *r, int is_sc,
 static __rte_always_inline unsigned int
 __rte_ring_do_dequeue(struct rte_ring *r, void **obj_table,
 		 unsigned int n, enum rte_ring_queue_behavior behavior,
-		 int is_sc, unsigned int *available)
+		 unsigned int is_sc, unsigned int *available)
 {
 	uint32_t cons_head, cons_next;
 	uint32_t entries;
 
-	n = __rte_ring_move_cons_head(r, is_sc, n, behavior,
+	n = __rte_ring_move_cons_head(r, (int)is_sc, n, behavior,
 			&cons_head, &cons_next, &entries);
 	if (n == 0)
 		goto end;

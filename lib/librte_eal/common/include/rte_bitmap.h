@@ -66,6 +66,7 @@ extern "C" {
 
 #include <string.h>
 #include <rte_common.h>
+#include <rte_config.h>
 #include <rte_debug.h>
 #include <rte_memory.h>
 #include <rte_branch_prediction.h>
@@ -116,7 +117,7 @@ __rte_bitmap_index1_inc(struct rte_bitmap *bmp)
 static inline uint64_t
 __rte_bitmap_mask1_get(struct rte_bitmap *bmp)
 {
-	return (~1lu) << bmp->offset1;
+	return (~1llu) << bmp->offset1;
 }
 
 static inline void
@@ -226,12 +227,12 @@ rte_bitmap_get_memory_footprint(uint32_t n_bits) {
 /**
  * Bitmap initialization
  *
- * @param mem_size
- *   Minimum expected size of bitmap.
+ * @param n_bits
+ *   Number of pre-allocated bits in array2.
  * @param mem
  *   Base address of array1 and array2.
- * @param n_bits
- *   Number of pre-allocated bits in array2. Must be non-zero and multiple of 512.
+ * @param mem_size
+ *   Minimum expected size of bitmap.
  * @return
  *   Handle to bitmap instance.
  */
@@ -345,7 +346,7 @@ rte_bitmap_get(struct rte_bitmap *bmp, uint32_t pos)
 	index2 = pos >> RTE_BITMAP_SLAB_BIT_SIZE_LOG2;
 	offset2 = pos & RTE_BITMAP_SLAB_BIT_MASK;
 	slab2 = bmp->array2 + index2;
-	return (*slab2) & (1lu << offset2);
+	return (*slab2) & (1llu << offset2);
 }
 
 /**
@@ -370,8 +371,8 @@ rte_bitmap_set(struct rte_bitmap *bmp, uint32_t pos)
 	slab2 = bmp->array2 + index2;
 	slab1 = bmp->array1 + index1;
 
-	*slab2 |= 1lu << offset2;
-	*slab1 |= 1lu << offset1;
+	*slab2 |= 1llu << offset2;
+	*slab1 |= 1llu << offset1;
 }
 
 /**
@@ -398,7 +399,7 @@ rte_bitmap_set_slab(struct rte_bitmap *bmp, uint32_t pos, uint64_t slab)
 	slab1 = bmp->array1 + index1;
 
 	*slab2 |= slab;
-	*slab1 |= 1lu << offset1;
+	*slab1 |= 1llu << offset1;
 }
 
 static inline uint64_t
@@ -436,7 +437,7 @@ rte_bitmap_clear(struct rte_bitmap *bmp, uint32_t pos)
 	slab2 = bmp->array2 + index2;
 
 	/* Return if array2 slab is not all-zeros */
-	*slab2 &= ~(1lu << offset2);
+	*slab2 &= ~(1llu << offset2);
 	if (*slab2){
 		return;
 	}
@@ -452,7 +453,7 @@ rte_bitmap_clear(struct rte_bitmap *bmp, uint32_t pos)
 	index1 = pos >> (RTE_BITMAP_SLAB_BIT_SIZE_LOG2 + RTE_BITMAP_CL_BIT_SIZE_LOG2);
 	offset1 = (pos >> RTE_BITMAP_CL_BIT_SIZE_LOG2) & RTE_BITMAP_SLAB_BIT_MASK;
 	slab1 = bmp->array1 + index1;
-	*slab1 &= ~(1lu << offset1);
+	*slab1 &= ~(1llu << offset1);
 
 	return;
 }

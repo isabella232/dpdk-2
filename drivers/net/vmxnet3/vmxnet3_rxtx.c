@@ -79,6 +79,8 @@
 
 #define	VMXNET3_TX_OFFLOAD_MASK	( \
 		PKT_TX_VLAN_PKT | \
+		PKT_TX_IPV6 |     \
+		PKT_TX_IPV4 |     \
 		PKT_TX_L4_MASK |  \
 		PKT_TX_TCP_SEG)
 
@@ -937,7 +939,7 @@ vmxnet3_dev_tx_queue_setup(struct rte_eth_dev *dev,
 
 	txq->queue_id = queue_idx;
 	txq->port_id = dev->data->port_id;
-	txq->shared = &hw->tqd_start[queue_idx];
+	txq->shared = NULL; /* set in vmxnet3_setup_driver_shared() */
 	txq->hw = hw;
 	txq->qid = queue_idx;
 	txq->stopped = TRUE;
@@ -1040,7 +1042,7 @@ vmxnet3_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->mp = mp;
 	rxq->queue_id = queue_idx;
 	rxq->port_id = dev->data->port_id;
-	rxq->shared = &hw->rqd_start[queue_idx];
+	rxq->shared = NULL; /* set in vmxnet3_setup_driver_shared() */
 	rxq->hw = hw;
 	rxq->qid1 = queue_idx;
 	rxq->qid2 = queue_idx + hw->num_rx_queues;

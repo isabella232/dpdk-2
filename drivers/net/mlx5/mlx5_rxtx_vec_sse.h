@@ -148,7 +148,7 @@ txq_scatter_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts,
 				      8,  9, 10, 11, /* bswap32 */
 				      4,  5,  6,  7, /* bswap32 */
 				      0,  1,  2,  3  /* bswap32 */);
-		uint8_t cs_flags = 0;
+		uint8_t cs_flags;
 		uint16_t max_elts;
 		uint16_t max_wqe;
 		__m128i *t_wqe, *dseg;
@@ -170,22 +170,7 @@ txq_scatter_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts,
 		}
 		wqe = &((volatile struct mlx5_wqe64 *)
 			 txq->wqes)[wqe_ci & wq_mask].hdr;
-		if (buf->ol_flags &
-		     (PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM | PKT_TX_UDP_CKSUM)) {
-			const uint64_t is_tunneled =
-				buf->ol_flags & (PKT_TX_TUNNEL_GRE |
-						 PKT_TX_TUNNEL_VXLAN);
-
-			if (is_tunneled && txq->tunnel_en) {
-				cs_flags = MLX5_ETH_WQE_L3_INNER_CSUM |
-					   MLX5_ETH_WQE_L4_INNER_CSUM;
-				if (buf->ol_flags & PKT_TX_OUTER_IP_CKSUM)
-					cs_flags |= MLX5_ETH_WQE_L3_CSUM;
-			} else {
-				cs_flags = MLX5_ETH_WQE_L3_CSUM |
-					   MLX5_ETH_WQE_L4_CSUM;
-			}
-		}
+		cs_flags = txq_ol_cksum_to_cs(txq, buf);
 		/* Title WQEBB pointer. */
 		t_wqe = (__m128i *)wqe;
 		dseg = (__m128i *)(wqe + 1);
@@ -218,10 +203,11 @@ txq_scatter_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts,
 	txq->elts_comp += (uint16_t)(elts_head - txq->elts_head);
 	txq->elts_head = elts_head;
 	if (txq->elts_comp >= MLX5_TX_COMP_THRESH) {
+		/* A CQE slot must always be available. */
+		assert((1u << txq->cqe_n) - (txq->cq_pi++ - txq->cq_ci));
 		wqe->ctrl[2] = rte_cpu_to_be_32(8);
 		wqe->ctrl[3] = txq->elts_head;
 		txq->elts_comp = 0;
-		++txq->cq_pi;
 	}
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	txq->stats.opackets += n;
@@ -320,9 +306,10 @@ txq_burst_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	if (txq->elts_comp + pkts_n < MLX5_TX_COMP_THRESH) {
 		txq->elts_comp += pkts_n;
 	} else {
+		/* A CQE slot must always be available. */
+		assert((1u << txq->cqe_n) - (txq->cq_pi++ - txq->cq_ci));
 		/* Request a completion. */
 		txq->elts_comp = 0;
-		++txq->cq_pi;
 		comp_req = 8;
 	}
 	/* Fill CTRL in the header. */
@@ -591,7 +578,7 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq, __m128i cqes[4],
 			_mm_set_epi32(0xffffff00, 0xffffff00,
 				      0xffffff00, 0xffffff00);
 		const __m128i fdir_flags = _mm_set1_epi32(PKT_RX_FDIR);
-		const __m128i fdir_id_flags = _mm_set1_epi32(PKT_RX_FDIR_ID);
+		__m128i fdir_id_flags = _mm_set1_epi32(PKT_RX_FDIR_ID);
 		__m128i flow_tag, invalid_mask;
 
 		flow_tag = _mm_and_si128(pinfo, pinfo_ft_mask);
@@ -601,7 +588,7 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq, __m128i cqes[4],
 					_mm_andnot_si128(invalid_mask,
 							 fdir_flags));
 		/* Mask out invalid entries. */
-		flow_tag = _mm_andnot_si128(invalid_mask, flow_tag);
+		fdir_id_flags = _mm_andnot_si128(invalid_mask, fdir_id_flags);
 		/* Check if flow tag MLX5_FLOW_MARK_DEFAULT. */
 		ol_flags = _mm_or_si128(ol_flags,
 					_mm_andnot_si128(
@@ -669,12 +656,16 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq, __m128i cqes[4],
  *   Array to store received packets.
  * @param pkts_n
  *   Maximum number of packets in array.
+ * @param[out] err
+ *   Pointer to a flag. Set non-zero value if pkts array has at least one error
+ *   packet to handle.
  *
  * @return
  *   Number of packets received including errors (<= pkts_n).
  */
 static inline uint16_t
-rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
+rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
+	    uint64_t *err)
 {
 	const uint16_t q_n = 1 << rxq->cqe_n;
 	const uint16_t q_mask = q_n - 1;
@@ -746,7 +737,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	 *   N - (rq_ci - rq_pi) := # of buffers consumed (to be replenished).
 	 */
 	repl_n = q_n - (rxq->rq_ci - rxq->rq_pi);
-	if (repl_n >= MLX5_VPMD_RXQ_RPLNSH_THRESH)
+	if (repl_n >= rxq->rq_repl_thresh)
 		mlx5_rx_replenish_bulk_mbuf(rxq, repl_n);
 	/* See if there're unreturned mbufs from compressed CQE. */
 	rcvd_pkt = rxq->cq_ci - rxq->rq_pi;
@@ -836,7 +827,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		/* B.2 copy mbuf pointers. */
 		_mm_storeu_si128((__m128i *)&pkts[pos], mbp1);
 		_mm_storeu_si128((__m128i *)&pkts[pos + 2], mbp2);
-		rte_compiler_barrier();
+		rte_io_rmb();
 		/* C.1 load remained CQE data and extract necessary fields. */
 		cqe_tmp2 = _mm_load_si128((__m128i *)&cq[pos + p3]);
 		cqe_tmp1 = _mm_load_si128((__m128i *)&cq[pos + p2]);
@@ -936,7 +927,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		opcode = _mm_packs_epi32(opcode, zero);
 		opcode = _mm_andnot_si128(invalid_mask, opcode);
 		/* D.4 mark if any error is set */
-		rxq->pending_err |= !!_mm_cvtsi128_si64(opcode);
+		*err |= _mm_cvtsi128_si64(opcode);
 		/* D.5 fill in mbuf - rearm_data and packet_type. */
 		rxq_cq_to_ptype_oflags_v(rxq, cqes, opcode, &pkts[pos]);
 		if (rxq->hw_timestamp) {

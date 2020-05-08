@@ -716,7 +716,7 @@ sec_simple_fd_to_mbuf(const struct qbman_fd *fd, __rte_unused uint8_t id)
 {
 	struct rte_crypto_op *op;
 	uint16_t len = DPAA2_GET_FD_LEN(fd);
-	uint16_t diff = 0;
+	int16_t diff = 0;
 	dpaa2_sec_session *sess_priv;
 
 	struct rte_mbuf *mbuf = DPAA2_INLINE_MBUF_FROM_BUF(
@@ -1309,7 +1309,7 @@ dpaa2_sec_aead_init(struct rte_cryptodev *dev,
 	case RTE_CRYPTO_AEAD_AES_GCM:
 		aeaddata.algtype = OP_ALG_ALGSEL_AES;
 		aeaddata.algmode = OP_ALG_AAI_GCM;
-		session->cipher_alg = RTE_CRYPTO_AEAD_AES_GCM;
+		session->aead_alg = RTE_CRYPTO_AEAD_AES_GCM;
 		break;
 	case RTE_CRYPTO_AEAD_AES_CCM:
 		RTE_LOG(ERR, PMD, "Crypto: Unsupported AEAD alg %u\n",
@@ -1990,7 +1990,7 @@ dpaa2_sec_session_clear(struct rte_cryptodev *dev,
 		rte_free(s->ctxt);
 		rte_free(s->cipher_key.data);
 		rte_free(s->auth_key.data);
-		memset(sess, 0, sizeof(dpaa2_sec_session));
+		memset(s, 0, sizeof(dpaa2_sec_session));
 		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
 		set_session_private_data(sess, index, NULL);
 		rte_mempool_put(sess_mp, sess_priv);
@@ -2326,14 +2326,15 @@ dpaa2_sec_dev_init(struct rte_cryptodev *cryptodev)
 			     retcode);
 		goto init_error;
 	}
-	sprintf(cryptodev->data->name, "dpsec-%u", hw_id);
+	snprintf(cryptodev->data->name, sizeof(cryptodev->data->name),
+			"dpsec-%u", hw_id);
 
 	internals->max_nb_queue_pairs = attr.num_tx_queues;
 	cryptodev->data->nb_queue_pairs = internals->max_nb_queue_pairs;
 	internals->hw = dpseci;
 	internals->token = token;
 
-	sprintf(str, "fle_pool_%d", cryptodev->data->dev_id);
+	snprintf(str, sizeof(str), "fle_pool_%d", cryptodev->data->dev_id);
 	internals->fle_pool = rte_mempool_create((const char *)str,
 			FLE_POOL_NUM_BUFS,
 			FLE_POOL_BUF_SIZE,
@@ -2364,7 +2365,8 @@ cryptodev_dpaa2_sec_probe(struct rte_dpaa2_driver *dpaa2_drv,
 
 	int retval;
 
-	sprintf(cryptodev_name, "dpsec-%d", dpaa2_dev->object_id);
+	snprintf(cryptodev_name, sizeof(cryptodev_name), "dpsec-%d",
+			dpaa2_dev->object_id);
 
 	cryptodev = rte_cryptodev_pmd_allocate(cryptodev_name, rte_socket_id());
 	if (cryptodev == NULL)

@@ -49,6 +49,7 @@ extern "C" {
 #endif
 
 #include <rte_common.h>
+#include <rte_config.h>
 
 __extension__
 enum rte_page_sizes {
@@ -207,6 +208,9 @@ unsigned rte_memory_get_nchannel(void);
  *   not the same on all devices.
  */
 unsigned rte_memory_get_nrank(void);
+
+/* check memsegs iovas are within a range based on dma mask */
+int rte_eal_check_dma_mask(uint8_t maskbits);
 
 /**
  * Drivers based on uio will not load unless physical

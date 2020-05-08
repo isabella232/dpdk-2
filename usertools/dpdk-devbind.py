@@ -278,6 +278,8 @@ def get_device_details(devices_type):
                 # of dictionary key names
                 if "Driver" in dev.keys():
                     dev["Driver_str"] = dev.pop("Driver")
+                if "Module" in dev.keys():
+                    dev["Module_str"] = dev.pop("Module")
                 # use dict to make copy of dev
                 devices[dev["Slot"]] = dict(dev)
             # Clear previous device's data
@@ -703,6 +705,13 @@ def do_arg_actions():
 
 def main():
     '''program main function'''
+    # check if lspci is installed, suppress any output
+    with open(os.devnull, 'w') as devnull:
+        ret = subprocess.call(['which', 'lspci'],
+                              stdout=devnull, stderr=devnull)
+        if ret != 0:
+            print("'lspci' not found - please install 'pciutils'")
+            sys.exit(1)
     parse_args()
     check_modules()
     clear_data()

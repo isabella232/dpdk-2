@@ -165,8 +165,7 @@ scan_one_fslmc_device(char *dev_name)
 
 	t_ptr = strtok(NULL, ".");
 	if (!t_ptr) {
-		FSLMC_BUS_LOG(ERR, "Incorrect device string observed (%s).",
-			      t_ptr);
+		FSLMC_BUS_LOG(ERR, "Incorrect device string observed (null).")
 		goto cleanup;
 	}
 
@@ -216,8 +215,8 @@ rte_fslmc_scan(void)
 		goto scan_fail;
 
 	/* Scan devices on the group */
-	sprintf(fslmc_dirpath, "%s/%d/devices", VFIO_IOMMU_GROUP_PATH,
-		groupid);
+	snprintf(fslmc_dirpath, sizeof(fslmc_dirpath), "%s/%d/devices",
+			VFIO_IOMMU_GROUP_PATH, groupid);
 	dir = opendir(fslmc_dirpath);
 	if (!dir) {
 		FSLMC_BUS_LOG(ERR, "Unable to open VFIO group dir.");
@@ -310,8 +309,9 @@ rte_fslmc_find_device(const struct rte_device *start, rte_dev_cmp_t cmp,
 	struct rte_dpaa2_device *dev;
 
 	TAILQ_FOREACH(dev, &rte_fslmc_bus.device_list, next) {
-		if (start && &dev->device == start) {
-			start = NULL;  /* starting point found */
+		if (start != NULL) {
+			if (&dev->device == start)
+				start = NULL;  /* starting point found */
 			continue;
 		}
 

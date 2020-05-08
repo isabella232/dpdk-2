@@ -43,6 +43,16 @@
 
 #include "mlx4.h"
 
+/*
+ * Compilation workaround for PPC64 when AltiVec is fully enabled, e.g. std=c11.
+ * Otherwise there would be a type conflict between stdbool and altivec.
+ */
+#if defined(__PPC64__) && !defined(__APPLE_ALTIVEC__)
+#undef bool
+/* redefine as in stdbool.h */
+#define bool _Bool
+#endif
+
 #ifndef NDEBUG
 
 /*
@@ -70,13 +80,7 @@ pmd_drv_log_basename(const char *s)
 			__func__, \
 			RTE_FMT_TAIL(__VA_ARGS__,)))
 #define DEBUG(...) PMD_DRV_LOG(DEBUG, __VA_ARGS__)
-#ifndef MLX4_PMD_DEBUG_BROKEN_VERBS
 #define claim_zero(...) assert((__VA_ARGS__) == 0)
-#else /* MLX4_PMD_DEBUG_BROKEN_VERBS */
-#define claim_zero(...) \
-	(void)(((__VA_ARGS__) == 0) || \
-		DEBUG("Assertion `(" # __VA_ARGS__ ") == 0' failed (IGNORED)."))
-#endif /* MLX4_PMD_DEBUG_BROKEN_VERBS */
 
 #else /* NDEBUG */
 

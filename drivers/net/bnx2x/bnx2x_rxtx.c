@@ -78,7 +78,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq = rte_zmalloc_socket("ethdev RX queue", sizeof(struct bnx2x_rx_queue),
 				 RTE_CACHE_LINE_SIZE, socket_id);
 	if (NULL == rxq) {
-		PMD_INIT_LOG(ERR, "rte_zmalloc for rxq failed!");
+		PMD_DRV_LOG(ERR, sc, "rte_zmalloc for rxq failed!");
 		return -ENOMEM;
 	}
 	rxq->sc = sc;
@@ -94,7 +94,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	sc->rx_ring_size = USABLE_RX_BD(rxq);
 	rxq->nb_cq_pages = RCQ_BD_PAGES(rxq);
 
-	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, usable_bd=%lu, "
+	PMD_DRV_LOG(DEBUG, sc, "fp[%02d] req_bd=%u, usable_bd=%lu, "
 		       "total_bd=%lu, rx_pages=%u, cq_pages=%u",
 		       queue_idx, nb_desc, (unsigned long)USABLE_RX_BD(rxq),
 		       (unsigned long)TOTAL_RX_BD(rxq), rxq->nb_rx_pages,
@@ -276,7 +276,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->tx_free_thresh = min(txq->tx_free_thresh,
 				  txq->nb_tx_desc - BDS_PER_TX_PKT);
 
-	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, thresh=%u, usable_bd=%lu, "
+	PMD_DRV_LOG(DEBUG, sc, "fp[%02d] req_bd=%u, thresh=%u, usable_bd=%lu, "
 		     "total_bd=%lu, tx_pages=%u",
 		     queue_idx, nb_desc, txq->tx_free_thresh,
 		     (unsigned long)USABLE_TX_BD(txq),
@@ -302,7 +302,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
-	/* PMD_DRV_LOG(DEBUG, "sw_ring=%p hw_ring=%p dma_addr=0x%"PRIx64,
+	/* PMD_DRV_LOG(DEBUG, sc, "sw_ring=%p hw_ring=%p dma_addr=0x%"PRIx64,
 	   txq->sw_ring, txq->tx_ring, txq->tx_ring_phys_addr); */
 
 	/* Link TX pages */
@@ -311,7 +311,9 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		busaddr = txq->tx_ring_phys_addr + BNX2X_PAGE_SIZE * (i % txq->nb_tx_pages);
 		tx_n_bd->addr_hi = rte_cpu_to_le_32(U64_HI(busaddr));
 		tx_n_bd->addr_lo = rte_cpu_to_le_32(U64_LO(busaddr));
-		/* PMD_DRV_LOG(DEBUG, "link tx page %lu", (TOTAL_TX_BD_PER_PAGE * i - 1)); */
+		/* PMD_DRV_LOG(DEBUG, sc, "link tx page %lu",
+		 *          (TOTAL_TX_BD_PER_PAGE * i - 1));
+		 */
 	}
 
 	txq->queue_id = queue_idx;
@@ -321,7 +323,6 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->tx_bd_tail = 0;
 	txq->tx_bd_head = 0;
 	txq->nb_tx_avail = txq->nb_tx_desc;
-	dev->tx_pkt_burst = bnx2x_xmit_pkts;
 	dev->data->tx_queues[queue_idx] = txq;
 	if (!sc->tx_queues) sc->tx_queues = dev->data->tx_queues;
 
@@ -450,20 +451,35 @@ next_rx:
 	return nb_rx;
 }
 
-int
-bnx2x_dev_rx_init(struct rte_eth_dev *dev)
+static uint16_t
+bnx2x_rxtx_pkts_dummy(__rte_unused void *p_rxq,
+		      __rte_unused struct rte_mbuf **rx_pkts,
+		      __rte_unused uint16_t nb_pkts)
+{
+	return 0;
+}
+
+void bnx2x_dev_rxtx_init_dummy(struct rte_eth_dev *dev)
+{
+	dev->rx_pkt_burst = bnx2x_rxtx_pkts_dummy;
+	dev->tx_pkt_burst = bnx2x_rxtx_pkts_dummy;
+}
+
+void bnx2x_dev_rxtx_init(struct rte_eth_dev *dev)
 {
 	dev->rx_pkt_burst = bnx2x_recv_pkts;
-
-	return 0;
+	dev->tx_pkt_burst = bnx2x_xmit_pkts;
 }
 
 void
 bnx2x_dev_clear_queues(struct rte_eth_dev *dev)
 {
+#ifdef RTE_LIBRTE_BNX2X_DEBUG_INIT
+	struct bnx2x_softc *sc = dev->data->dev_private;
+#endif
 	uint8_t i;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		struct bnx2x_tx_queue *txq = dev->data->tx_queues[i];

@@ -81,8 +81,10 @@ fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 
 	const __m128i pkttype_msk = _mm_set_epi16(
 			0x0000, 0x0000, 0x0000, 0x0000,
-			PKT_RX_VLAN, PKT_RX_VLAN,
-			PKT_RX_VLAN, PKT_RX_VLAN);
+			PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED,
+			PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED,
+			PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED,
+			PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED);
 
 	/* mask everything except rss type */
 	const __m128i rsstype_msk = _mm_set_epi16(
@@ -386,8 +388,15 @@ fm10k_rx_queue_release_mbufs_vec(struct fm10k_rx_queue *rxq)
 		return;
 
 	/* free all mbufs that are valid in the ring */
-	for (i = rxq->next_dd; i != rxq->rxrearm_start; i = (i + 1) & mask)
-		rte_pktmbuf_free_seg(rxq->sw_ring[i]);
+	if (rxq->rxrearm_nb == 0) {
+		for (i = 0; i < rxq->nb_desc; i++)
+			if (rxq->sw_ring[i] != NULL)
+				rte_pktmbuf_free_seg(rxq->sw_ring[i]);
+	} else {
+		for (i = rxq->next_dd; i != rxq->rxrearm_start;
+				i = (i + 1) & mask)
+			rte_pktmbuf_free_seg(rxq->sw_ring[i]);
+	}
 	rxq->rxrearm_nb = rxq->nb_desc;
 
 	/* set all entries to NULL */

@@ -43,6 +43,7 @@
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
 #include <rte_vfio.h>
+#include <rte_memory.h>
 
 #include "eal_private.h"
 #include "eal_filesystem.h"
@@ -62,7 +63,8 @@
 extern struct rte_pci_bus rte_pci_bus;
 
 static int
-pci_get_kernel_driver_by_path(const char *filename, char *dri_name)
+pci_get_kernel_driver_by_path(const char *filename, char *dri_name,
+			      size_t len)
 {
 	int count;
 	char path[PATH_MAX];
@@ -83,7 +85,7 @@ pci_get_kernel_driver_by_path(const char *filename, char *dri_name)
 
 	name = strrchr(path, '/');
 	if (name) {
-		strncpy(dri_name, name + 1, strlen(name + 1) + 1);
+		strlcpy(dri_name, name + 1, len);
 		return 0;
 	}
 
@@ -339,7 +341,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 
 	/* parse driver */
 	snprintf(filename, sizeof(filename), "%s/driver", dirname);
-	ret = pci_get_kernel_driver_by_path(filename, driver);
+	ret = pci_get_kernel_driver_by_path(filename, driver, sizeof(driver));
 	if (ret < 0) {
 		RTE_LOG(ERR, EAL, "Fail to get kernel driver\n");
 		free(dev);
@@ -576,6 +578,88 @@ pci_one_device_has_iova_va(void)
 	return 0;
 }
 
+#if defined(RTE_ARCH_X86)
+static bool
+pci_one_device_iommu_support_va(struct rte_pci_device *dev)
+{
+#define VTD_CAP_MGAW_SHIFT	16
+#define VTD_CAP_MGAW_MASK	(0x3fULL << VTD_CAP_MGAW_SHIFT)
+	struct rte_pci_addr *addr = &dev->addr;
+	char filename[PATH_MAX];
+	FILE *fp;
+	uint64_t mgaw, vtd_cap_reg = 0;
+
+	snprintf(filename, sizeof(filename),
+		 "%s/" PCI_PRI_FMT "/iommu/intel-iommu/cap",
+		 rte_pci_get_sysfs_path(), addr->domain, addr->bus, addr->devid,
+		 addr->function);
+
+	fp = fopen(filename, "r");
+	if (fp == NULL) {
+		/* We don't have an Intel IOMMU, assume VA supported */
+		if (errno == ENOENT)
+			return true;
+
+		RTE_LOG(ERR, EAL, "%s(): can't open %s: %s\n",
+			__func__, filename, strerror(errno));
+		return false;
+	}
+
+	/* We have an Intel IOMMU */
+	if (fscanf(fp, "%" PRIx64, &vtd_cap_reg) != 1) {
+		RTE_LOG(ERR, EAL, "%s(): can't read %s\n", __func__, filename);
+		fclose(fp);
+		return false;
+	}
+
+	fclose(fp);
+
+	mgaw = ((vtd_cap_reg & VTD_CAP_MGAW_MASK) >> VTD_CAP_MGAW_SHIFT) + 1;
+
+	if (!rte_eal_check_dma_mask(mgaw))
+		return true;
+	else
+		return false;
+
+}
+#elif defined(RTE_ARCH_PPC_64)
+static bool
+pci_one_device_iommu_support_va(__rte_unused struct rte_pci_device *dev)
+{
+	return false;
+}
+#else
+static bool
+pci_one_device_iommu_support_va(__rte_unused struct rte_pci_device *dev)
+{
+	return true;
+}
+#endif
+
+/*
+ * All devices IOMMUs support VA as IOVA
+ */
+static bool
+pci_devices_iommu_support_va(void)
+{
+	struct rte_pci_device *dev = NULL;
+	struct rte_pci_driver *drv = NULL;
+	int iommu_dma_mask_check_done = 0;
+
+	FOREACH_DRIVER_ON_PCIBUS(drv) {
+		FOREACH_DEVICE_ON_PCIBUS(dev) {
+			if (!rte_pci_match(drv, dev))
+				continue;
+			if (!iommu_dma_mask_check_done) {
+				if (!pci_one_device_iommu_support_va(dev))
+					return false;
+				iommu_dma_mask_check_done  = 1;
+			}
+		}
+	}
+	return true;
+}
+
 /*
  * Get iommu class of PCI devices on the bus.
  */
@@ -586,12 +670,7 @@ rte_pci_get_iommu_class(void)
 	bool is_vfio_noiommu_enabled = true;
 	bool has_iova_va;
 	bool is_bound_uio;
-	bool spapr_iommu =
-#if defined(RTE_ARCH_PPC_64)
-		true;
-#else
-		false;
-#endif
+	bool iommu_no_va;
 
 	is_bound = pci_one_device_is_bound();
 	if (!is_bound)
@@ -599,13 +678,14 @@ rte_pci_get_iommu_class(void)
 
 	has_iova_va = pci_one_device_has_iova_va();
 	is_bound_uio = pci_one_device_bound_uio();
+	iommu_no_va = !pci_devices_iommu_support_va();
 #ifdef VFIO_PRESENT
 	is_vfio_noiommu_enabled = rte_vfio_noiommu_is_enabled() == true ?
 					true : false;
 #endif
 
 	if (has_iova_va && !is_bound_uio && !is_vfio_noiommu_enabled &&
-			!spapr_iommu)
+			!iommu_no_va)
 		return RTE_IOVA_VA;
 
 	if (has_iova_va) {
@@ -614,8 +694,8 @@ rte_pci_get_iommu_class(void)
 			RTE_LOG(WARNING, EAL, "vfio-noiommu mode configured\n");
 		if (is_bound_uio)
 			RTE_LOG(WARNING, EAL, "few device bound to UIO\n");
-		if (spapr_iommu)
-			RTE_LOG(WARNING, EAL, "sPAPR IOMMU does not support IOVA as VA\n");
+		if (iommu_no_va)
+			RTE_LOG(WARNING, EAL, "IOMMU does not support IOVA as VA\n");
 	}
 
 	return RTE_IOVA_PA;
@@ -625,23 +705,22 @@ rte_pci_get_iommu_class(void)
 int rte_pci_read_config(const struct rte_pci_device *device,
 		void *buf, size_t len, off_t offset)
 {
+	char devname[RTE_DEV_NAME_MAX_LEN] = "";
 	const struct rte_intr_handle *intr_handle = &device->intr_handle;
 
-	switch (intr_handle->type) {
-	case RTE_INTR_HANDLE_UIO:
-	case RTE_INTR_HANDLE_UIO_INTX:
+	switch (device->kdrv) {
+	case RTE_KDRV_IGB_UIO:
+	case RTE_KDRV_UIO_GENERIC:
 		return pci_uio_read_config(intr_handle, buf, len, offset);
-
 #ifdef VFIO_PRESENT
-	case RTE_INTR_HANDLE_VFIO_MSIX:
-	case RTE_INTR_HANDLE_VFIO_MSI:
-	case RTE_INTR_HANDLE_VFIO_LEGACY:
+	case RTE_KDRV_VFIO:
 		return pci_vfio_read_config(intr_handle, buf, len, offset);
 #endif
 	default:
+		rte_pci_device_name(&device->addr, devname,
+				    RTE_DEV_NAME_MAX_LEN);
 		RTE_LOG(ERR, EAL,
-			"Unknown handle type of fd %d\n",
-					intr_handle->fd);
+			"Unknown driver type for %s\n", devname);
 		return -1;
 	}
 }
@@ -650,23 +729,22 @@ int rte_pci_read_config(const struct rte_pci_device *device,
 int rte_pci_write_config(const struct rte_pci_device *device,
 		const void *buf, size_t len, off_t offset)
 {
+	char devname[RTE_DEV_NAME_MAX_LEN] = "";
 	const struct rte_intr_handle *intr_handle = &device->intr_handle;
 
-	switch (intr_handle->type) {
-	case RTE_INTR_HANDLE_UIO:
-	case RTE_INTR_HANDLE_UIO_INTX:
+	switch (device->kdrv) {
+	case RTE_KDRV_IGB_UIO:
+	case RTE_KDRV_UIO_GENERIC:
 		return pci_uio_write_config(intr_handle, buf, len, offset);
-
 #ifdef VFIO_PRESENT
-	case RTE_INTR_HANDLE_VFIO_MSIX:
-	case RTE_INTR_HANDLE_VFIO_MSI:
-	case RTE_INTR_HANDLE_VFIO_LEGACY:
+	case RTE_KDRV_VFIO:
 		return pci_vfio_write_config(intr_handle, buf, len, offset);
 #endif
 	default:
+		rte_pci_device_name(&device->addr, devname,
+				    RTE_DEV_NAME_MAX_LEN);
 		RTE_LOG(ERR, EAL,
-			"Unknown handle type of fd %d\n",
-					intr_handle->fd);
+			"Unknown driver type for %s\n", devname);
 		return -1;
 	}
 }
@@ -723,7 +801,6 @@ pci_ioport_map(struct rte_pci_device *dev, int bar __rte_unused,
 	if (!found)
 		return -1;
 
-	dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
 	p->base = start;
 	RTE_LOG(DEBUG, EAL, "PCI Port IO found start=0x%x\n", start);
 

@@ -63,6 +63,8 @@
 #define DPAA2_DQRR_RING_SIZE	16
 	/** <Maximum number of slots available in RX ring*/
 
+#define DPAA2_MAX_TX_RETRY_COUNT	10000
+
 #define MC_PORTAL_INDEX		0
 #define NUM_DPIO_REGIONS	2
 #define NUM_DQS_PER_QUEUE       2
@@ -284,10 +286,10 @@ static void *dpaa2_mem_ptov(phys_addr_t paddr)
 	int i;
 
 	for (i = 0; i < RTE_MAX_MEMSEG && memseg[i].addr_64 != 0; i++) {
-		if (paddr >= memseg[i].phys_addr &&
-		   (char *)paddr < (char *)memseg[i].phys_addr + memseg[i].len)
+		if (paddr >= memseg[i].iova &&
+		   (char *)paddr < (char *)memseg[i].iova + memseg[i].len)
 			return (void *)(memseg[i].addr_64
-				+ (paddr - memseg[i].phys_addr));
+				+ (paddr - memseg[i].iova));
 	}
 	return NULL;
 }
@@ -301,7 +303,7 @@ static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr)
 	for (i = 0; i < RTE_MAX_MEMSEG && memseg[i].addr_64 != 0; i++) {
 		if (vaddr >= memseg[i].addr_64 &&
 		    vaddr < memseg[i].addr_64 + memseg[i].len)
-			return memseg[i].phys_addr
+			return memseg[i].iova
 				+ (vaddr - memseg[i].addr_64);
 	}
 	return (phys_addr_t)(NULL);

@@ -47,6 +47,46 @@
 
 #include "bnxt_cpr.h"
 
+/* Vendor ID */
+#define PCI_VENDOR_ID_BROADCOM 0x14E4
+
+/* Device IDs */
+#define BROADCOM_DEV_ID_STRATUS_NIC_VF 0x1609
+#define BROADCOM_DEV_ID_STRATUS_NIC 0x1614
+#define BROADCOM_DEV_ID_57414_VF 0x16c1
+#define BROADCOM_DEV_ID_57301 0x16c8
+#define BROADCOM_DEV_ID_57302 0x16c9
+#define BROADCOM_DEV_ID_57304_PF 0x16ca
+#define BROADCOM_DEV_ID_57304_VF 0x16cb
+#define BROADCOM_DEV_ID_57417_MF 0x16cc
+#define BROADCOM_DEV_ID_NS2 0x16cd
+#define BROADCOM_DEV_ID_57311 0x16ce
+#define BROADCOM_DEV_ID_57312 0x16cf
+#define BROADCOM_DEV_ID_57402 0x16d0
+#define BROADCOM_DEV_ID_57404 0x16d1
+#define BROADCOM_DEV_ID_57406_PF 0x16d2
+#define BROADCOM_DEV_ID_57406_VF 0x16d3
+#define BROADCOM_DEV_ID_57402_MF 0x16d4
+#define BROADCOM_DEV_ID_57407_RJ45 0x16d5
+#define BROADCOM_DEV_ID_57412 0x16d6
+#define BROADCOM_DEV_ID_57414 0x16d7
+#define BROADCOM_DEV_ID_57416_RJ45 0x16d8
+#define BROADCOM_DEV_ID_57417_RJ45 0x16d9
+#define BROADCOM_DEV_ID_5741X_VF 0x16dc
+#define BROADCOM_DEV_ID_57412_MF 0x16de
+#define BROADCOM_DEV_ID_57314 0x16df
+#define BROADCOM_DEV_ID_57317_RJ45 0x16e0
+#define BROADCOM_DEV_ID_5731X_VF 0x16e1
+#define BROADCOM_DEV_ID_57417_SFP 0x16e2
+#define BROADCOM_DEV_ID_57416_SFP 0x16e3
+#define BROADCOM_DEV_ID_57317_SFP 0x16e4
+#define BROADCOM_DEV_ID_57404_MF 0x16e7
+#define BROADCOM_DEV_ID_57406_MF 0x16e8
+#define BROADCOM_DEV_ID_57407_SFP 0x16e9
+#define BROADCOM_DEV_ID_57407_MF 0x16ea
+#define BROADCOM_DEV_ID_57414_MF 0x16ec
+#define BROADCOM_DEV_ID_57416_MF 0x16ee
+
 #define BNXT_MAX_MTU		9500
 #define VLAN_TAG_SIZE		4
 #define BNXT_MAX_LED		4
@@ -162,6 +202,7 @@ struct bnxt_link_info {
 	uint16_t		link_speed;
 	uint16_t		support_speeds;
 	uint16_t		auto_link_speed;
+	uint16_t		force_link_speed;
 	uint16_t		auto_link_speed_mask;
 	uint32_t		preemphasis;
 	uint8_t			phy_type;
@@ -244,6 +285,11 @@ struct bnxt {
 	rte_spinlock_t			hwrm_lock;
 	uint16_t			max_req_len;
 	uint16_t			max_resp_len;
+
+	 /* default command timeout value of 50ms */
+#define HWRM_CMD_TIMEOUT		50000
+	/* default HWRM request timeout value */
+	uint32_t			hwrm_cmd_timeout;
 
 	struct bnxt_link_info	link_info;
 	struct bnxt_cos_queue_info	cos_queue[BNXT_COS_QUEUE_COUNT];

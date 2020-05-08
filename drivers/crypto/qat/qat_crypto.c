@@ -69,6 +69,10 @@
 #include "adf_transport_access_macros.h"
 
 #define BYTE_LENGTH    8
+/* bpi is only used for partial blocks of DES and AES
+ * so AES block len can be assumed as max len for iv, src and dst
+ */
+#define BPI_MAX_ENCR_IV_LEN ICP_QAT_HW_AES_BLK_SZ
 
 static int
 qat_is_cipher_alg_supported(enum rte_crypto_cipher_algorithm algo,
@@ -121,16 +125,16 @@ bpi_cipher_encrypt(uint8_t *src, uint8_t *dst,
 {
 	EVP_CIPHER_CTX *ctx = (EVP_CIPHER_CTX *)bpi_ctx;
 	int encrypted_ivlen;
-	uint8_t encrypted_iv[16];
-	int i;
+	uint8_t encrypted_iv[BPI_MAX_ENCR_IV_LEN];
+	uint8_t *encr = encrypted_iv;
 
 	/* ECB method: encrypt the IV, then XOR this with plaintext */
 	if (EVP_EncryptUpdate(ctx, encrypted_iv, &encrypted_ivlen, iv, ivlen)
 								<= 0)
 		goto cipher_encrypt_err;
 
-	for (i = 0; i < srclen; i++)
-		*(dst+i) = *(src+i)^(encrypted_iv[i]);
+	for (; srclen != 0; --srclen, ++dst, ++src, ++encr)
+		*dst = *src ^ *encr;
 
 	return 0;
 
@@ -150,16 +154,16 @@ bpi_cipher_decrypt(uint8_t *src, uint8_t *dst,
 {
 	EVP_CIPHER_CTX *ctx = (EVP_CIPHER_CTX *)bpi_ctx;
 	int encrypted_ivlen;
-	uint8_t encrypted_iv[16];
-	int i;
+	uint8_t encrypted_iv[BPI_MAX_ENCR_IV_LEN];
+	uint8_t *encr = encrypted_iv;
 
 	/* ECB method: encrypt (not decrypt!) the IV, then XOR with plaintext */
 	if (EVP_EncryptUpdate(ctx, encrypted_iv, &encrypted_ivlen, iv, ivlen)
 								<= 0)
 		goto cipher_decrypt_err;
 
-	for (i = 0; i < srclen; i++)
-		*(dst+i) = *(src+i)^(encrypted_iv[i]);
+	for (; srclen != 0; --srclen, ++dst, ++src, ++encr)
+		*dst = *src ^ *encr;
 
 	return 0;
 
@@ -844,7 +848,7 @@ static inline uint32_t
 qat_bpicipher_preprocess(struct qat_session *ctx,
 				struct rte_crypto_op *op)
 {
-	uint8_t block_len = qat_cipher_get_block_size(ctx->qat_cipher_alg);
+	int block_len = qat_cipher_get_block_size(ctx->qat_cipher_alg);
 	struct rte_crypto_sym_op *sym_op = op->sym;
 	uint8_t last_block_len = block_len > 0 ?
 			sym_op->cipher.data.length % block_len : 0;
@@ -899,7 +903,7 @@ static inline uint32_t
 qat_bpicipher_postprocess(struct qat_session *ctx,
 				struct rte_crypto_op *op)
 {
-	uint8_t block_len = qat_cipher_get_block_size(ctx->qat_cipher_alg);
+	int block_len = qat_cipher_get_block_size(ctx->qat_cipher_alg);
 	struct rte_crypto_sym_op *sym_op = op->sym;
 	uint8_t last_block_len = block_len > 0 ?
 			sym_op->cipher.data.length % block_len : 0;
@@ -1288,9 +1292,8 @@ qat_write_hw_desc_entry(struct rte_crypto_op *op, uint8_t *out_msg,
 				ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3) {
 
 			if (unlikely(
-				(cipher_param->cipher_length % BYTE_LENGTH != 0)
-				 || (cipher_param->cipher_offset
-							% BYTE_LENGTH != 0))) {
+			    (op->sym->cipher.data.length % BYTE_LENGTH != 0) ||
+			    (op->sym->cipher.data.offset % BYTE_LENGTH != 0))) {
 				PMD_DRV_LOG(ERR,
 		  "SNOW3G/KASUMI/ZUC in QAT PMD only supports byte aligned values");
 				op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
@@ -1323,8 +1326,9 @@ qat_write_hw_desc_entry(struct rte_crypto_op *op, uint8_t *out_msg,
 			ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_KASUMI_F9 ||
 			ctx->qat_hash_alg ==
 				ICP_QAT_HW_AUTH_ALGO_ZUC_3G_128_EIA3) {
-			if (unlikely((auth_param->auth_off % BYTE_LENGTH != 0)
-				|| (auth_param->auth_len % BYTE_LENGTH != 0))) {
+			if (unlikely(
+			    (op->sym->auth.data.offset % BYTE_LENGTH != 0) ||
+			    (op->sym->auth.data.length % BYTE_LENGTH != 0))) {
 				PMD_DRV_LOG(ERR,
 		"For SNOW3G/KASUMI/ZUC, QAT PMD only supports byte aligned values");
 				op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
@@ -1366,8 +1370,8 @@ qat_write_hw_desc_entry(struct rte_crypto_op *op, uint8_t *out_msg,
 
 		}
 		min_ofs = auth_ofs;
-
-		auth_param->auth_res_addr = op->sym->auth.digest.phys_addr;
+		auth_param->auth_res_addr =
+			op->sym->auth.digest.phys_addr;
 
 	}
 

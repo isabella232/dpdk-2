@@ -181,8 +181,9 @@ extern "C" {
 #include <rte_devargs.h>
 #include <rte_errno.h>
 #include <rte_common.h>
+#include <rte_config.h>
+#include <rte_ether.h>
 
-#include "rte_ether.h"
 #include "rte_eth_ctrl.h"
 #include "rte_dev_info.h"
 
@@ -262,17 +263,17 @@ __extension__
 struct rte_eth_link {
 	uint32_t link_speed;        /**< ETH_SPEED_NUM_ */
 	uint16_t link_duplex  : 1;  /**< ETH_LINK_[HALF/FULL]_DUPLEX */
-	uint16_t link_autoneg : 1;  /**< ETH_LINK_SPEED_[AUTONEG/FIXED] */
+	uint16_t link_autoneg : 1;  /**< ETH_LINK_[AUTONEG/FIXED] */
 	uint16_t link_status  : 1;  /**< ETH_LINK_[DOWN/UP] */
 } __attribute__((aligned(8)));      /**< aligned for atomic64 read/write */
 
 /* Utility constants */
-#define ETH_LINK_HALF_DUPLEX    0 /**< Half-duplex connection. */
-#define ETH_LINK_FULL_DUPLEX    1 /**< Full-duplex connection. */
-#define ETH_LINK_DOWN           0 /**< Link is down. */
-#define ETH_LINK_UP             1 /**< Link is up. */
-#define ETH_LINK_FIXED          0 /**< No autonegotiation. */
-#define ETH_LINK_AUTONEG        1 /**< Autonegotiated. */
+#define ETH_LINK_HALF_DUPLEX 0 /**< Half-duplex connection (see link_duplex). */
+#define ETH_LINK_FULL_DUPLEX 1 /**< Full-duplex connection (see link_duplex). */
+#define ETH_LINK_DOWN        0 /**< Link is down (see link_status). */
+#define ETH_LINK_UP          1 /**< Link is up (see link_status). */
+#define ETH_LINK_FIXED       0 /**< No autonegotiation (see link_autoneg). */
+#define ETH_LINK_AUTONEG     1 /**< Autonegotiated (see link_autoneg). */
 
 /**
  * A structure used to configure the ring threshold registers of an RX/TX
@@ -943,12 +944,6 @@ struct rte_eth_conf {
 };
 
 /**
- * A structure used to retrieve the contextual information of
- * an Ethernet device, such as the controlling driver of the device,
- * its PCI context, etc...
- */
-
-/**
  * RX offload capabilities of a device.
  */
 #define DEV_RX_OFFLOAD_VLAN_STRIP  0x00000001
@@ -1009,6 +1004,12 @@ struct rte_pci_device;
 /**
  * Ethernet device information
  */
+
+/**
+ * A structure used to retrieve the contextual information of
+ * an Ethernet device, such as the controlling driver of the
+ * device, etc...
+ */
 struct rte_eth_dev_info {
 	struct rte_pci_device *pci_dev; /**< Device PCI information. */
 	const char *driver_name; /**< Device Driver name. */
@@ -1051,7 +1052,7 @@ struct rte_eth_dev_info {
 
 /**
  * Ethernet device RX queue information structure.
- * Used to retieve information about configured queue.
+ * Used to retrieve information about configured queue.
  */
 struct rte_eth_rxq_info {
 	struct rte_mempool *mp;     /**< mempool used by that queue. */
@@ -1876,7 +1877,6 @@ struct rte_eth_dev *rte_eth_dev_allocated(const char *name);
  * to that slot for the driver to use.
  *
  * @param	name	Unique identifier name for each Ethernet device
- * @param	type	Device type of this Ethernet device
  * @return
  *   - Slot in the rte_dev_devices array for a new device;
  */
@@ -2542,7 +2542,7 @@ void rte_eth_xstats_reset(uint16_t port_id);
  * @param stat_idx
  *   The per-queue packet statistics functionality number that the transmit
  *   queue is to be assigned.
- *   The value must be in the range [0, RTE_MAX_ETHPORT_QUEUE_STATS_MAPS - 1].
+ *   The value must be in the range [0, RTE_ETHDEV_QUEUE_STAT_CNTRS - 1].
  * @return
  *   Zero if successful. Non-zero otherwise.
  */
@@ -2562,7 +2562,7 @@ int rte_eth_dev_set_tx_queue_stats_mapping(uint16_t port_id,
  * @param stat_idx
  *   The per-queue packet statistics functionality number that the receive
  *   queue is to be assigned.
- *   The value must be in the range [0, RTE_MAX_ETHPORT_QUEUE_STATS_MAPS - 1].
+ *   The value must be in the range [0, RTE_ETHDEV_QUEUE_STAT_CNTRS - 1].
  * @return
  *   Zero if successful. Non-zero otherwise.
  */
@@ -2696,7 +2696,7 @@ int rte_eth_dev_set_mtu(uint16_t port_id, uint16_t mtu);
  *   Otherwise, disable VLAN filtering of VLAN packets tagged with *vlan_id*.
  * @return
  *   - (0) if successful.
- *   - (-ENOSUP) if hardware-assisted VLAN filtering not configured.
+ *   - (-ENOTSUP) if hardware-assisted VLAN filtering not configured.
  *   - (-ENODEV) if *port_id* invalid.
  *   - (-ENOSYS) if VLAN filtering on *port_id* disabled.
  *   - (-EINVAL) if *vlan_id* > 4095.
@@ -2718,7 +2718,7 @@ int rte_eth_dev_vlan_filter(uint16_t port_id, uint16_t vlan_id, int on);
  *   If 0, Disable VLAN Stripping of the receive queue of the Ethernet port.
  * @return
  *   - (0) if successful.
- *   - (-ENOSUP) if hardware-assisted VLAN stripping not configured.
+ *   - (-ENOTSUP) if hardware-assisted VLAN stripping not configured.
  *   - (-ENODEV) if *port_id* invalid.
  *   - (-EINVAL) if *rx_queue_id* invalid.
  */
@@ -2738,7 +2738,7 @@ int rte_eth_dev_set_vlan_strip_on_queue(uint16_t port_id, uint16_t rx_queue_id,
  *   The Tag Protocol ID
  * @return
  *   - (0) if successful.
- *   - (-ENOSUP) if hardware-assisted VLAN TPID setup is not supported.
+ *   - (-ENOTSUP) if hardware-assisted VLAN TPID setup is not supported.
  *   - (-ENODEV) if *port_id* invalid.
  */
 int rte_eth_dev_set_vlan_ether_type(uint16_t port_id,
@@ -2762,7 +2762,7 @@ int rte_eth_dev_set_vlan_ether_type(uint16_t port_id,
  *       ETH_VLAN_EXTEND_OFFLOAD
  * @return
  *   - (0) if successful.
- *   - (-ENOSUP) if hardware-assisted VLAN filtering not configured.
+ *   - (-ENOTSUP) if hardware-assisted VLAN filtering not configured.
  *   - (-ENODEV) if *port_id* invalid.
  */
 int rte_eth_dev_set_vlan_offload(uint16_t port_id, int offload_mask);
@@ -2884,6 +2884,7 @@ rte_eth_rx_burst(uint16_t port_id, uint16_t queue_id,
 		 struct rte_mbuf **rx_pkts, const uint16_t nb_pkts)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+	uint16_t nb_rx;
 
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, 0);
@@ -2894,13 +2895,14 @@ rte_eth_rx_burst(uint16_t port_id, uint16_t queue_id,
 		return 0;
 	}
 #endif
-	int16_t nb_rx = (*dev->rx_pkt_burst)(dev->data->rx_queues[queue_id],
-			rx_pkts, nb_pkts);
+	nb_rx = (*dev->rx_pkt_burst)(dev->data->rx_queues[queue_id],
+				     rx_pkts, nb_pkts);
 
 #ifdef RTE_ETHDEV_RXTX_CALLBACKS
-	struct rte_eth_rxtx_callback *cb = dev->post_rx_burst_cbs[queue_id];
+	if (unlikely(dev->post_rx_burst_cbs[queue_id] != NULL)) {
+		struct rte_eth_rxtx_callback *cb =
+			dev->post_rx_burst_cbs[queue_id];
 
-	if (unlikely(cb != NULL)) {
 		do {
 			nb_rx = cb->fn.rx(port_id, queue_id, rx_pkts, nb_rx,
 						nb_pkts, cb->param);
@@ -2935,7 +2937,7 @@ rte_eth_rx_queue_count(uint16_t port_id, uint16_t queue_id)
 	if (queue_id >= dev->data->nb_rx_queues)
 		return -EINVAL;
 
-	return (*dev->dev_ops->rx_queue_count)(dev, queue_id);
+	return (int)(*dev->dev_ops->rx_queue_count)(dev, queue_id);
 }
 
 /**
@@ -3124,6 +3126,9 @@ static inline int rte_eth_tx_descriptor_status(uint16_t port_id,
  * invoke this function concurrently on the same tx queue without SW lock.
  * @see rte_eth_dev_info_get, struct rte_eth_txconf::txq_flags
  *
+ * @see rte_eth_tx_prepare to perform some prior checks or adjustments
+ * for offloads.
+ *
  * @param port_id
  *   The port identifier of the Ethernet device.
  * @param queue_id
@@ -3239,7 +3244,7 @@ rte_eth_tx_prepare(uint16_t port_id, uint16_t queue_id,
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 	if (!rte_eth_dev_is_valid_port(port_id)) {
 		RTE_PMD_DEBUG_TRACE("Invalid TX port_id=%d\n", port_id);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 #endif
@@ -3249,7 +3254,7 @@ rte_eth_tx_prepare(uint16_t port_id, uint16_t queue_id,
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 	if (queue_id >= dev->data->nb_tx_queues) {
 		RTE_PMD_DEBUG_TRACE("Invalid TX queue_id=%d\n", queue_id);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 #endif
@@ -3358,8 +3363,9 @@ rte_eth_tx_buffer_flush(uint16_t port_id, uint16_t queue_id,
 
 	/* All packets sent, or to be dealt with by callback below */
 	if (unlikely(sent != to_send))
-		buffer->error_callback(&buffer->pkts[sent], to_send - sent,
-				buffer->error_userdata);
+		buffer->error_callback(&buffer->pkts[sent],
+				       (uint16_t)(to_send - sent),
+				       buffer->error_userdata);
 
 	return sent;
 }

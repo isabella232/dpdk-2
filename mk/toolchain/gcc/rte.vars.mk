@@ -81,6 +81,8 @@ ifeq ($(RTE_DEVEL_BUILD),y)
 WERROR_FLAGS += -Werror
 endif
 
+WERROR_FLAGS += -Wno-address-of-packed-member
+
 # There are many issues reported for strict alignment architectures
 # which are not necessarily fatal. Report as warnings.
 ifeq ($(CONFIG_RTE_ARCH_STRICT_ALIGN),y)
@@ -97,6 +99,15 @@ endif
 # workaround GCC bug with warning "may be used uninitialized"
 ifeq ($(shell test $(GCC_VERSION) -lt 47 && echo 1), 1)
 WERROR_FLAGS += -Wno-uninitialized
+endif
+
+HOST_WERROR_FLAGS := $(WERROR_FLAGS)
+
+ifeq ($(shell test $(HOST_GCC_VERSION) -gt 70 && echo 1), 1)
+# Tell GCC only to error for switch fallthroughs without a suitable comment
+HOST_WERROR_FLAGS += -Wimplicit-fallthrough=2
+# Ignore errors for snprintf truncation
+HOST_WERROR_FLAGS += -Wno-format-truncation
 endif
 
 ifeq ($(shell test $(GCC_VERSION) -gt 70 && echo 1), 1)

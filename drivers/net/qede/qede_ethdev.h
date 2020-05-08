@@ -34,6 +34,7 @@
 #include "base/nvm_cfg.h"
 #include "base/ecore_sp_commands.h"
 #include "base/ecore_l2.h"
+#include "base/ecore_vf.h"
 
 #include "qede_logs.h"
 #include "qede_if.h"
@@ -185,6 +186,7 @@ struct qede_dev {
 	struct qede_fastpath *fp_array;
 	uint16_t mtu;
 	uint16_t new_mtu;
+	bool enable_tx_switching;
 	bool rss_enable;
 	struct rte_eth_rss_conf rss_conf;
 	uint16_t rss_ind_table[ECORE_RSS_IND_TABLE_SIZE];
@@ -206,6 +208,8 @@ struct qede_dev {
 	struct qede_fdir_info fdir_info;
 	bool vlan_strip_flg;
 	char drv_ver[QEDE_PMD_DRV_VER_STR_SIZE];
+	bool vport_started;
+	int vlan_offload_mask;
 	void *ethdev;
 };
 

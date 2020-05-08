@@ -87,6 +87,10 @@
 #endif
 /* Bit Mask to indicate what bits required for building TX context */
 #define IXGBE_TX_OFFLOAD_MASK (			 \
+		PKT_TX_OUTER_IPV6 |		 \
+		PKT_TX_OUTER_IPV4 |		 \
+		PKT_TX_IPV6 |			 \
+		PKT_TX_IPV4 |			 \
 		PKT_TX_VLAN_PKT |		 \
 		PKT_TX_IP_CKSUM |		 \
 		PKT_TX_L4_MASK |		 \
@@ -2054,7 +2058,7 @@ ixgbe_recv_pkts_lro(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts,
 		struct ixgbe_rx_entry *next_rxe = NULL;
 		struct rte_mbuf *first_seg;
 		struct rte_mbuf *rxm;
-		struct rte_mbuf *nmb;
+		struct rte_mbuf *nmb = NULL;
 		union ixgbe_adv_rx_desc rxd;
 		uint16_t data_len;
 		uint16_t next_id;
@@ -3321,6 +3325,7 @@ static void
 ixgbe_rss_configure(struct rte_eth_dev *dev)
 {
 	struct rte_eth_rss_conf rss_conf;
+	struct ixgbe_adapter *adapter;
 	struct ixgbe_hw *hw;
 	uint32_t reta;
 	uint16_t i;
@@ -3329,6 +3334,7 @@ ixgbe_rss_configure(struct rte_eth_dev *dev)
 	uint32_t reta_reg;
 
 	PMD_INIT_FUNC_TRACE();
+	adapter = (struct ixgbe_adapter *)dev->data->dev_private;
 	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	sp_reta_size = ixgbe_reta_size_get(hw->mac.type);
@@ -3338,16 +3344,18 @@ ixgbe_rss_configure(struct rte_eth_dev *dev)
 	 * The byte-swap is needed because NIC registers are in
 	 * little-endian order.
 	 */
-	reta = 0;
-	for (i = 0, j = 0; i < sp_reta_size; i++, j++) {
-		reta_reg = ixgbe_reta_reg_get(hw->mac.type, i);
+	if (adapter->rss_reta_updated == 0) {
+		reta = 0;
+		for (i = 0, j = 0; i < sp_reta_size; i++, j++) {
+			reta_reg = ixgbe_reta_reg_get(hw->mac.type, i);
 
-		if (j == dev->data->nb_rx_queues)
-			j = 0;
-		reta = (reta << 8) | j;
-		if ((i & 3) == 3)
-			IXGBE_WRITE_REG(hw, reta_reg,
-					rte_bswap32(reta));
+			if (j == dev->data->nb_rx_queues)
+				j = 0;
+			reta = (reta << 8) | j;
+			if ((i & 3) == 3)
+				IXGBE_WRITE_REG(hw, reta_reg,
+						rte_bswap32(reta));
+		}
 	}
 
 	/*

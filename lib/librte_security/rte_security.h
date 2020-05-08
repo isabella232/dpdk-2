@@ -60,7 +60,7 @@ extern "C" {
 
 /** IPSec protocol mode */
 enum rte_security_ipsec_sa_mode {
-	RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT,
+	RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT = 1,
 	/**< IPSec Transport mode */
 	RTE_SECURITY_IPSEC_SA_MODE_TUNNEL,
 	/**< IPSec Tunnel mode */
@@ -68,7 +68,7 @@ enum rte_security_ipsec_sa_mode {
 
 /** IPSec Protocol */
 enum rte_security_ipsec_sa_protocol {
-	RTE_SECURITY_IPSEC_SA_PROTO_AH,
+	RTE_SECURITY_IPSEC_SA_PROTO_AH = 1,
 	/**< AH protocol */
 	RTE_SECURITY_IPSEC_SA_PROTO_ESP,
 	/**< ESP protocol */
@@ -76,7 +76,7 @@ enum rte_security_ipsec_sa_protocol {
 
 /** IPSEC tunnel type */
 enum rte_security_ipsec_tunnel_type {
-	RTE_SECURITY_IPSEC_TUNNEL_IPV4,
+	RTE_SECURITY_IPSEC_TUNNEL_IPV4 = 1,
 	/**< Outer header is IPv4 */
 	RTE_SECURITY_IPSEC_TUNNEL_IPV6,
 	/**< Outer header is IPv6 */
@@ -94,7 +94,7 @@ enum rte_security_ipsec_tunnel_type {
 struct rte_security_ctx {
 	void *device;
 	/**< Crypto/ethernet device attached */
-	struct rte_security_ops *ops;
+	const struct rte_security_ops *ops;
 	/**< Pointer to security ops for the device */
 	uint16_t sess_cnt;
 	/**< Number of sessions attached to this context */
@@ -143,14 +143,14 @@ struct rte_security_ipsec_tunnel_param {
  * IPsec Security Association option flags
  */
 struct rte_security_ipsec_sa_options {
-	/**< Extended Sequence Numbers (ESN)
+	/** Extended Sequence Numbers (ESN)
 	 *
 	 * * 1: Use extended (64 bit) sequence numbers
 	 * * 0: Use normal sequence numbers
 	 */
 	uint32_t esn : 1;
 
-	/**< UDP encapsulation
+	/** UDP encapsulation
 	 *
 	 * * 1: Do UDP encapsulation/decapsulation so that IPSEC packets can
 	 *      traverse through NAT boxes.
@@ -158,7 +158,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t udp_encap : 1;
 
-	/**< Copy DSCP bits
+	/** Copy DSCP bits
 	 *
 	 * * 1: Copy IPv4 or IPv6 DSCP bits from inner IP header to
 	 *      the outer IP header in encapsulation, and vice versa in
@@ -167,7 +167,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t copy_dscp : 1;
 
-	/**< Copy IPv6 Flow Label
+	/** Copy IPv6 Flow Label
 	 *
 	 * * 1: Copy IPv6 flow label from inner IPv6 header to the
 	 *      outer IPv6 header.
@@ -175,7 +175,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t copy_flabel : 1;
 
-	/**< Copy IPv4 Don't Fragment bit
+	/** Copy IPv4 Don't Fragment bit
 	 *
 	 * * 1: Copy the DF bit from the inner IPv4 header to the outer
 	 *      IPv4 header.
@@ -183,7 +183,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t copy_df : 1;
 
-	/**< Decrement inner packet Time To Live (TTL) field
+	/** Decrement inner packet Time To Live (TTL) field
 	 *
 	 * * 1: In tunnel mode, decrement inner packet IPv4 TTL or
 	 *      IPv6 Hop Limit after tunnel decapsulation, or before tunnel
@@ -228,6 +228,7 @@ struct rte_security_ipsec_xform {
  */
 struct rte_security_macsec_xform {
 	/** To be Filled */
+	int dummy;
 };
 
 /**
@@ -252,7 +253,7 @@ enum rte_security_session_action_type {
 
 /** Security session protocol definition */
 enum rte_security_session_protocol {
-	RTE_SECURITY_PROTOCOL_IPSEC,
+	RTE_SECURITY_PROTOCOL_IPSEC = 1,
 	/**< IPsec Protocol */
 	RTE_SECURITY_PROTOCOL_MACSEC,
 	/**< MACSec Protocol */
@@ -452,6 +453,7 @@ struct rte_security_capability {
 		/**< IPsec capability */
 		struct {
 			/* To be Filled */
+			int dummy;
 		} macsec;
 		/**< MACsec capability */
 	};

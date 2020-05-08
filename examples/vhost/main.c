@@ -87,9 +87,6 @@
 /* Max number of devices. Limited by vmdq. */
 #define MAX_DEVICES 64
 
-/* Size of buffers used for snprintfs. */
-#define MAX_PRINT_BUFF 6072
-
 /* Maximum long option length for option parsing. */
 #define MAX_LONG_OPT_SZ 64
 
@@ -279,12 +276,6 @@ port_init(uint16_t port)
 	/* The max pool number from dev_info will be used to validate the pool number specified in cmd line */
 	rte_eth_dev_info_get (port, &dev_info);
 
-	if (dev_info.max_rx_queues > MAX_QUEUES) {
-		rte_exit(EXIT_FAILURE,
-			"please define MAX_QUEUES no less than %u in %s\n",
-			dev_info.max_rx_queues, __FILE__);
-	}
-
 	rxconf = &dev_info.default_rxconf;
 	txconf = &dev_info.default_txconf;
 	rxconf->rx_drop_en = 1;
@@ -409,11 +400,19 @@ port_init(uint16_t port)
 static int
 us_vhost_parse_socket_path(const char *q_arg)
 {
+	char *old;
+
 	/* parse number string */
 	if (strnlen(q_arg, PATH_MAX) == PATH_MAX)
 		return -1;
 
+	old = socket_files;
 	socket_files = realloc(socket_files, PATH_MAX * (nb_sockets + 1));
+	if (socket_files == NULL) {
+		free(old);
+		return -1;
+	}
+
 	snprintf(socket_files + nb_sockets * PATH_MAX, PATH_MAX, "%s", q_arg);
 	nb_sockets++;
 
@@ -964,7 +963,8 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m, uint16_t vlan_tag)
 		struct vhost_dev *vdev2;
 
 		TAILQ_FOREACH(vdev2, &vhost_dev_list, global_vdev_entry) {
-			virtio_xmit(vdev2, vdev, m);
+			if (vdev2 != vdev)
+				virtio_xmit(vdev2, vdev, m);
 		}
 		goto queue2nic;
 	}

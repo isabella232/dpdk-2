@@ -729,7 +729,8 @@ static void cmd_help_long_parsed(void *parsed_result,
 			"    show all queue region related configuration info\n\n"
 
 			"add port tm node shaper profile (port_id) (shaper_profile_id)"
-			" (tb_rate) (tb_size) (packet_length_adjust)\n"
+			" (cmit_tb_rate) (cmit_tb_size) (peak_tb_rate) (peak_tb_size)"
+			" (packet_length_adjust)\n"
 			"	Add port tm node private shaper profile.\n\n"
 
 			"del port tm node shaper profile (port_id) (shaper_profile_id)\n"
@@ -797,6 +798,9 @@ static void cmd_help_long_parsed(void *parsed_result,
 
 			"port close (port_id|all)\n"
 			"    Close all ports or port_id.\n\n"
+
+			"port reset (port_id|all)\n"
+			"    Reset all ports or port_id.\n\n"
 
 			"port attach (ident)\n"
 			"    Attach physical or virtual dev by pci address or virtual device name\n\n"
@@ -1501,6 +1505,8 @@ cmd_config_rx_tx_parsed(void *parsed_result,
 			printf("Warning: Either rx or tx queues should be non zero\n");
 			return;
 		}
+		if (check_nb_rxq(res->value) != 0)
+			return;
 		nb_rxq = res->value;
 	}
 	else if (!strcmp(res->name, "txq")) {
@@ -1508,6 +1514,8 @@ cmd_config_rx_tx_parsed(void *parsed_result,
 			printf("Warning: Either rx or tx queues should be non zero\n");
 			return;
 		}
+		if (check_nb_txq(res->value) != 0)
+			return;
 		nb_txq = res->value;
 	}
 	else if (!strcmp(res->name, "rxd")) {
@@ -1969,7 +1977,6 @@ cmd_config_rss_hash_key_parsed(void *parsed_result,
 	uint8_t hash_key_size;
 	uint32_t key_len;
 
-	memset(&dev_info, 0, sizeof(dev_info));
 	rte_eth_dev_info_get(res->port_id, &dev_info);
 	if (dev_info.hash_key_size > 0 &&
 			dev_info.hash_key_size <= sizeof(hash_key))
@@ -2123,7 +2130,7 @@ cmdline_parse_inst_t cmd_config_rxtx_queue = {
 	.data = NULL,
 	.help_str = "port <port_id> rxq|txq <queue_id> start|stop",
 	.tokens = {
-		(void *)&cmd_config_speed_all_port,
+		(void *)&cmd_config_rxtx_queue_port,
 		(void *)&cmd_config_rxtx_queue_portid,
 		(void *)&cmd_config_rxtx_queue_rxtxq,
 		(void *)&cmd_config_rxtx_queue_qid,
@@ -2209,7 +2216,6 @@ cmd_set_rss_reta_parsed(void *parsed_result,
 	struct rte_eth_rss_reta_entry64 reta_conf[8];
 	struct cmd_config_rss_reta *res = parsed_result;
 
-	memset(&dev_info, 0, sizeof(dev_info));
 	rte_eth_dev_info_get(res->port_id, &dev_info);
 	if (dev_info.reta_size == 0) {
 		printf("Redirection table size is 0 which is "
@@ -2329,7 +2335,6 @@ cmd_showport_reta_parsed(void *parsed_result,
 	struct rte_eth_dev_info dev_info;
 	uint16_t max_reta_size;
 
-	memset(&dev_info, 0, sizeof(dev_info));
 	rte_eth_dev_info_get(res->port_id, &dev_info);
 	max_reta_size = RTE_MIN(dev_info.reta_size, ETH_RSS_RETA_SIZE_512);
 	if (res->size == 0 || res->size > max_reta_size) {
@@ -3352,7 +3357,7 @@ cmdline_parse_token_num_t cmd_vlan_tpid_tpid =
 			      tp_id, UINT16);
 cmdline_parse_token_num_t cmd_vlan_tpid_portid =
 	TOKEN_NUM_INITIALIZER(struct cmd_vlan_tpid_result,
-			      port_id, UINT8);
+			      port_id, UINT16);
 
 cmdline_parse_inst_t cmd_vlan_tpid = {
 	.f = cmd_vlan_tpid_parsed,
@@ -3792,7 +3797,7 @@ cmdline_parse_token_string_t cmd_csum_tunnel_csum =
 				csum, "csum");
 cmdline_parse_token_string_t cmd_csum_tunnel_parse =
 	TOKEN_STRING_INITIALIZER(struct cmd_csum_tunnel_result,
-				parse, "parse_tunnel");
+				parse, "parse-tunnel");
 cmdline_parse_token_string_t cmd_csum_tunnel_onoff =
 	TOKEN_STRING_INITIALIZER(struct cmd_csum_tunnel_result,
 				onoff, "on#off");
@@ -3803,7 +3808,7 @@ cmdline_parse_token_num_t cmd_csum_tunnel_portid =
 cmdline_parse_inst_t cmd_csum_tunnel = {
 	.f = cmd_csum_tunnel_parsed,
 	.data = NULL,
-	.help_str = "csum parse_tunnel on|off <port_id>: "
+	.help_str = "csum parse-tunnel on|off <port_id>: "
 		"Enable/Disable parsing of tunnels for csum engine",
 	.tokens = {
 		(void *)&cmd_csum_tunnel_csum,
@@ -7048,7 +7053,6 @@ static void cmd_quit_parsed(__attribute__((unused)) void *parsed_result,
 			    struct cmdline *cl,
 			    __attribute__((unused)) void *data)
 {
-	pmd_test_exit();
 	cmdline_quit(cl);
 }
 
@@ -9747,11 +9751,11 @@ struct cmd_flow_director_result {
 	uint16_t port_dst;
 	cmdline_fixed_string_t verify_tag;
 	uint32_t verify_tag_value;
-	cmdline_ipaddr_t tos;
+	cmdline_fixed_string_t tos;
 	uint8_t tos_value;
-	cmdline_ipaddr_t proto;
+	cmdline_fixed_string_t proto;
 	uint8_t proto_value;
-	cmdline_ipaddr_t ttl;
+	cmdline_fixed_string_t ttl;
 	uint8_t ttl_value;
 	cmdline_fixed_string_t vlan;
 	uint16_t vlan_value;
@@ -10042,7 +10046,6 @@ cmd_flow_director_filter_parsed(void *parsed_result,
 		else if (!strncmp(res->pf_vf, "vf", 2)) {
 			struct rte_eth_dev_info dev_info;
 
-			memset(&dev_info, 0, sizeof(dev_info));
 			rte_eth_dev_info_get(res->port_id, &dev_info);
 			errno = 0;
 			vf_id = strtoul(res->pf_vf + 2, &end, 10);
@@ -10298,7 +10301,7 @@ cmdline_parse_inst_t cmd_add_del_sctp_flow_director = {
 		(void *)&cmd_flow_director_flow_type,
 		(void *)&cmd_flow_director_src,
 		(void *)&cmd_flow_director_ip_src,
-		(void *)&cmd_flow_director_port_dst,
+		(void *)&cmd_flow_director_port_src,
 		(void *)&cmd_flow_director_dst,
 		(void *)&cmd_flow_director_ip_dst,
 		(void *)&cmd_flow_director_port_dst,
@@ -11190,7 +11193,7 @@ cmd_set_hash_global_config_parsed(void *parsed_result,
 							res->port_id);
 	else
 		printf("Global hash configurations have been set "
-			"succcessfully by port %d\n", res->port_id);
+			"successfully by port %d\n", res->port_id);
 }
 
 cmdline_parse_token_string_t cmd_set_hash_global_config_all =

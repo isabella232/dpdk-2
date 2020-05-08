@@ -53,13 +53,6 @@
 #define DRV_DESCRIPTION		"Cisco VIC Ethernet NIC Poll-mode Driver"
 #define DRV_COPYRIGHT		"Copyright 2008-2015 Cisco Systems, Inc"
 
-#define ENIC_WQ_MAX		8
-/* With Rx scatter support, we use two RQs on VIC per RQ used by app. Both
- * RQs use the same CQ.
- */
-#define ENIC_RQ_MAX		16
-#define ENIC_CQ_MAX		(ENIC_WQ_MAX + (ENIC_RQ_MAX / 2))
-#define ENIC_INTR_MAX		(ENIC_CQ_MAX + 2)
 #define ENIC_MAX_MAC_ADDR	64
 
 #define VLAN_ETH_HLEN           18
@@ -98,8 +91,8 @@ struct enic_fdir {
 	u32 modes;
 	u32 types_mask;
 	void (*copy_fltr_fn)(struct filter_v2 *filt,
-			     struct rte_eth_fdir_input *input,
-			     struct rte_eth_fdir_masks *masks);
+			     const struct rte_eth_fdir_input *input,
+			     const struct rte_eth_fdir_masks *masks);
 };
 
 struct enic_soft_stats {
@@ -146,21 +139,22 @@ struct enic {
 	u8 adv_filters;
 	u32 flow_filter_mode;
 	u8 filter_tags;
+	uint8_t ig_vlan_rewrite_mode; /* devargs ig-vlan-rewrite */
 
 	unsigned int flags;
 	unsigned int priv_flags;
 
-	/* work queue */
-	struct vnic_wq wq[ENIC_WQ_MAX];
-	unsigned int wq_count;
+	/* work queue (len = conf_wq_count) */
+	struct vnic_wq *wq;
+	unsigned int wq_count; /* equals eth_dev nb_tx_queues */
 
-	/* receive queue */
-	struct vnic_rq rq[ENIC_RQ_MAX];
-	unsigned int rq_count;
+	/* receive queue (len = conf_rq_count) */
+	struct vnic_rq *rq;
+	unsigned int rq_count; /* equals eth_dev nb_rx_queues */
 
-	/* completion queue */
-	struct vnic_cq cq[ENIC_CQ_MAX];
-	unsigned int cq_count;
+	/* completion queue (len = conf_cq_count) */
+	struct vnic_cq *cq;
+	unsigned int cq_count; /* equals rq_count + wq_count */
 
 	/* interrupt resource */
 	struct vnic_intr intr;
@@ -309,9 +303,5 @@ int enic_set_mtu(struct enic *enic, uint16_t new_mtu);
 int enic_link_update(struct enic *enic);
 void enic_fdir_info(struct enic *enic);
 void enic_fdir_info_get(struct enic *enic, struct rte_eth_fdir_info *stats);
-void copy_fltr_v1(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
-		  struct rte_eth_fdir_masks *masks);
-void copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
-		  struct rte_eth_fdir_masks *masks);
 extern const struct rte_flow_ops enic_flow_ops;
 #endif /* _ENIC_H_ */

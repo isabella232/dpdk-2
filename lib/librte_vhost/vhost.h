@@ -59,6 +59,8 @@
 
 #define BUF_VECTOR_MAX 256
 
+#define VHOST_LOG_CACHE_NR 32
+
 /**
  * Structure contains buffer address, length and descriptor index
  * from vring to do scatter RX.
@@ -92,6 +94,14 @@ struct batch_copy_elem {
 	uint64_t log_addr;
 };
 
+/*
+ * Structure that contains the info for batched dirty logging.
+ */
+struct log_cache_entry {
+	uint32_t offset;
+	unsigned long val;
+};
+
 /**
  * Structure contains variables relevant to RX/TX virtqueues.
  */
@@ -108,12 +118,14 @@ struct vhost_virtqueue {
 
 	/* Backend value to determine if device should started/stopped */
 	int			backend;
+	int			enabled;
+	int			access_ok;
+	rte_spinlock_t		access_lock;
+
 	/* Used to notify the guest (trigger interrupt) */
 	int			callfd;
 	/* Currently unused as polling mode is enabled */
 	int			kickfd;
-	int			enabled;
-	int			access_ok;
 
 	/* Physical address of used ring, for logging */
 	uint64_t		log_guest_addr;
@@ -130,6 +142,9 @@ struct vhost_virtqueue {
 
 	struct batch_copy_elem	*batch_copy_elems;
 	uint16_t		batch_copy_nb_elems;
+
+	struct log_cache_entry log_cache[VHOST_LOG_CACHE_NR];
+	uint16_t log_cache_nb_elem;
 
 	rte_rwlock_t	iotlb_lock;
 	rte_rwlock_t	iotlb_pending_lock;
@@ -256,43 +271,45 @@ struct virtio_net {
 } __rte_cache_aligned;
 
 
-#define VHOST_LOG_PAGE	4096
-
-/*
- * Atomically set a bit in memory.
- */
-static __rte_always_inline void
-vhost_set_bit(unsigned int nr, volatile uint8_t *addr)
-{
-	__sync_fetch_and_or_8(addr, (1U << nr));
-}
-
-static __rte_always_inline void
-vhost_log_page(uint8_t *log_base, uint64_t page)
-{
-	vhost_set_bit(page % 8, &log_base[page / 8]);
-}
+void __vhost_log_cache_write(struct virtio_net *dev,
+		struct vhost_virtqueue *vq,
+		uint64_t addr, uint64_t len);
+void __vhost_log_cache_write_iova(struct virtio_net *dev,
+		struct vhost_virtqueue *vq,
+		uint64_t iova, uint64_t len);
+void __vhost_log_cache_sync(struct virtio_net *dev,
+		struct vhost_virtqueue *vq);
+void __vhost_log_write(struct virtio_net *dev, uint64_t addr, uint64_t len);
+void __vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			    uint64_t iova, uint64_t len);
 
 static __rte_always_inline void
 vhost_log_write(struct virtio_net *dev, uint64_t addr, uint64_t len)
 {
-	uint64_t page;
+	if (unlikely(dev->features & (1ULL << VHOST_F_LOG_ALL)))
+		__vhost_log_write(dev, addr, len);
+}
 
-	if (likely(((dev->features & (1ULL << VHOST_F_LOG_ALL)) == 0) ||
-		   !dev->log_base || !len))
-		return;
+static __rte_always_inline void
+vhost_log_cache_sync(struct virtio_net *dev, struct vhost_virtqueue *vq)
+{
+	if (unlikely(dev->features & (1ULL << VHOST_F_LOG_ALL)))
+		__vhost_log_cache_sync(dev, vq);
+}
 
-	if (unlikely(dev->log_size <= ((addr + len - 1) / VHOST_LOG_PAGE / 8)))
-		return;
+static __rte_always_inline void
+vhost_log_cache_write(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			uint64_t addr, uint64_t len)
+{
+	if (unlikely(dev->features & (1ULL << VHOST_F_LOG_ALL)))
+		__vhost_log_cache_write(dev, vq, addr, len);
+}
 
-	/* To make sure guest memory updates are committed before logging */
-	rte_smp_wmb();
-
-	page = addr / VHOST_LOG_PAGE;
-	while (page * VHOST_LOG_PAGE < addr + len) {
-		vhost_log_page((uint8_t *)(uintptr_t)dev->log_base, page);
-		page += 1;
-	}
+static __rte_always_inline void
+vhost_log_cache_used_vring(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			uint64_t offset, uint64_t len)
+{
+	vhost_log_cache_write(dev, vq, vq->log_guest_addr + offset, len);
 }
 
 static __rte_always_inline void
@@ -300,6 +317,32 @@ vhost_log_used_vring(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		     uint64_t offset, uint64_t len)
 {
 	vhost_log_write(dev, vq->log_guest_addr + offset, len);
+}
+
+static __rte_always_inline void
+vhost_log_cache_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			   uint64_t iova, uint64_t len)
+{
+	if (likely(!(dev->features & (1ULL << VHOST_F_LOG_ALL))))
+		return;
+
+	if (dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM))
+		__vhost_log_cache_write_iova(dev, vq, iova, len);
+	else
+		__vhost_log_cache_write(dev, vq, iova, len);
+}
+
+static __rte_always_inline void
+vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			   uint64_t iova, uint64_t len)
+{
+	if (likely(!(dev->features & (1ULL << VHOST_F_LOG_ALL))))
+		return;
+
+	if (dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM))
+		__vhost_log_write_iova(dev, vq, iova, len);
+	else
+		__vhost_log_write(dev, iova, len);
 }
 
 /* Macros for printing using RTE_LOG */
@@ -357,6 +400,26 @@ gpa_to_hpa(struct virtio_net *dev, uint64_t gpa, uint64_t size)
 	return 0;
 }
 
+static __rte_always_inline uint64_t
+hva_to_gpa(struct virtio_net *dev, uint64_t vva, uint64_t len)
+{
+	struct rte_vhost_mem_region *r;
+	uint32_t i;
+
+	if (unlikely(!dev || !dev->mem))
+		return 0;
+
+	for (i = 0; i < dev->mem->nregions; i++) {
+		r = &dev->mem->regions[i];
+
+		if (vva >= r->host_user_addr &&
+		    vva + len <  r->host_user_addr + r->size) {
+			return r->guest_phys_addr + vva - r->host_user_addr;
+		}
+	}
+	return 0;
+}
+
 struct virtio_net *get_device(int vid);
 
 int vhost_new_device(void);
@@ -379,18 +442,52 @@ struct vhost_device_ops const *vhost_driver_callback_get(const char *path);
 void vhost_backend_cleanup(struct virtio_net *dev);
 
 uint64_t __vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
-			uint64_t iova, uint64_t size, uint8_t perm);
+			uint64_t iova, uint64_t *len, uint8_t perm);
 int vring_translate(struct virtio_net *dev, struct vhost_virtqueue *vq);
 void vring_invalidate(struct virtio_net *dev, struct vhost_virtqueue *vq);
 
 static __rte_always_inline uint64_t
 vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
-			uint64_t iova, uint64_t size, uint8_t perm)
+			uint64_t iova, uint64_t *len, uint8_t perm)
 {
 	if (!(dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM)))
-		return rte_vhost_gpa_to_vva(dev->mem, iova);
+		return rte_vhost_va_from_guest_pa(dev->mem, iova, len);
 
-	return __vhost_iova_to_vva(dev, vq, iova, size, perm);
+	return __vhost_iova_to_vva(dev, vq, iova, len, perm);
+}
+
+static __rte_always_inline void
+restore_mbuf(struct rte_mbuf *m)
+{
+	uint32_t mbuf_size, priv_size;
+
+	while (m) {
+		priv_size = rte_pktmbuf_priv_size(m->pool);
+		mbuf_size = sizeof(struct rte_mbuf) + priv_size;
+		/* start of buffer is after mbuf structure and priv data */
+
+		m->buf_addr = (char *)m + mbuf_size;
+		m->buf_iova = rte_mempool_virt2iova(m) + mbuf_size;
+		m = m->next;
+	}
+}
+
+static __rte_always_inline bool
+mbuf_is_consumed(struct rte_mbuf *m)
+{
+	while (m) {
+		if (rte_mbuf_refcnt_read(m) > 1)
+			return false;
+		m = m->next;
+	}
+
+	return true;
+}
+
+static __rte_always_inline void
+put_zmbuf(struct zcopy_mbuf *zmbuf)
+{
+	zmbuf->in_use = 0;
 }
 
 #endif /* _VHOST_NET_CDEV_H_ */

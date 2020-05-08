@@ -55,7 +55,7 @@ extern "C" {
  * Guarantees that the LOAD and STORE operations generated before the
  * barrier occur before the LOAD and STORE operations generated after.
  */
-#define	rte_mb()  {asm volatile("sync" : : : "memory"); }
+#define	rte_mb()  asm volatile("sync" : : : "memory")
 
 /**
  * Write memory barrier.
@@ -63,11 +63,7 @@ extern "C" {
  * Guarantees that the STORE operations generated before the barrier
  * occur before the STORE operations generated after.
  */
-#ifdef RTE_ARCH_64
-#define	rte_wmb() {asm volatile("lwsync" : : : "memory"); }
-#else
-#define	rte_wmb() {asm volatile("sync" : : : "memory"); }
-#endif
+#define	rte_wmb() asm volatile("sync" : : : "memory")
 
 /**
  * Read memory barrier.
@@ -75,11 +71,7 @@ extern "C" {
  * Guarantees that the LOAD operations generated before the barrier
  * occur before the LOAD operations generated after.
  */
-#ifdef RTE_ARCH_64
-#define	rte_rmb() {asm volatile("lwsync" : : : "memory"); }
-#else
-#define	rte_rmb() {asm volatile("sync" : : : "memory"); }
-#endif
+#define	rte_rmb() asm volatile("sync" : : : "memory")
 
 #define rte_smp_mb() rte_mb()
 

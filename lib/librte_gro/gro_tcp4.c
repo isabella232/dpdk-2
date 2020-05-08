@@ -343,12 +343,20 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 	struct ipv4_hdr *ipv4_hdr;
 	struct tcp_hdr *tcp_hdr;
 	uint32_t sent_seq;
-	uint16_t tcp_dl, ip_id;
+	uint16_t ip_id;
+	int32_t tcp_dl;
 
 	struct tcp4_key key;
 	uint32_t cur_idx, prev_idx, item_idx;
 	uint32_t i, max_key_num;
 	int cmp;
+
+	/*
+	 * Don't process the packet whose TCP header length is greater
+	 * than 60 bytes or less than 20 bytes.
+	 */
+	if (unlikely(INVALID_TCP_HDRLEN(pkt->l4_len)))
+		return -1;
 
 	eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
 	ipv4_hdr = (struct ipv4_hdr *)((char *)eth_hdr + pkt->l2_len);
@@ -360,10 +368,10 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 	 */
 	if (tcp_hdr->tcp_flags != TCP_ACK_FLAG)
 		return -1;
-	/* if payload length is 0, return immediately */
+	/* if payload length is less than or equal to 0, return immediately */
 	tcp_dl = rte_be_to_cpu_16(ipv4_hdr->total_length) - pkt->l3_len -
 		pkt->l4_len;
-	if (tcp_dl == 0)
+	if (tcp_dl <= 0)
 		return -1;
 
 	ip_id = rte_be_to_cpu_16(ipv4_hdr->packet_id);

@@ -341,7 +341,7 @@ The commandline options are:
 
 *   ``--port-topology=mode``
 
-    Set port topology, where mode is ``paired`` (the default) or ``chained``.
+    Set port topology, where mode is ``paired`` (the default), ``chained`` or ``loop``.
 
     In ``paired`` mode, the forwarding is between pairs of ports, for example: (0,1), (2,3), (4,5).
 
@@ -349,13 +349,15 @@ The commandline options are:
 
     The ordering of the ports can be changed using the portlist testpmd runtime function.
 
+    In ``loop`` mode, ingress traffic is simply transmitted back on the same interface.
+
 *   ``--forward-mode=mode``
 
     Set the forwarding mode where ``mode`` is one of the following::
 
        io (the default)
        mac
-       mac_swap
+       macswap
        flowgen
        rxonly
        txonly

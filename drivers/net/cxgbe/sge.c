@@ -1130,7 +1130,6 @@ out_free:
 				txq->stats.mapping_err++;
 				goto out_free;
 			}
-			rte_prefetch0((volatile void *)addr);
 			return tx_do_packet_coalesce(txq, mbuf, cflits, adap,
 						     pi, addr, nb_pkts);
 		} else {
@@ -1432,6 +1431,52 @@ static inline void rspq_next(struct sge_rspq *q)
 	}
 }
 
+static inline void cxgbe_set_mbuf_info(struct rte_mbuf *pkt, uint32_t ptype,
+				       uint64_t ol_flags)
+{
+	pkt->packet_type |= ptype;
+	pkt->ol_flags |= ol_flags;
+}
+
+static inline void cxgbe_fill_mbuf_info(struct adapter *adap,
+					const struct cpl_rx_pkt *cpl,
+					struct rte_mbuf *pkt)
+{
+	bool csum_ok;
+	u16 err_vec;
+
+	if (adap->params.tp.rx_pkt_encap)
+		err_vec = G_T6_COMPR_RXERR_VEC(ntohs(cpl->err_vec));
+	else
+		err_vec = ntohs(cpl->err_vec);
+
+	csum_ok = cpl->csum_calc && !err_vec;
+
+	if (cpl->vlan_ex)
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L2_ETHER_VLAN,
+				    PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED);
+	else
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L2_ETHER, 0);
+
+	if (cpl->l2info & htonl(F_RXF_IP))
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L3_IPV4,
+				    csum_ok ? PKT_RX_IP_CKSUM_GOOD :
+					      PKT_RX_IP_CKSUM_BAD);
+	else if (cpl->l2info & htonl(F_RXF_IP6))
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L3_IPV6,
+				    csum_ok ? PKT_RX_IP_CKSUM_GOOD :
+					      PKT_RX_IP_CKSUM_BAD);
+
+	if (cpl->l2info & htonl(F_RXF_TCP))
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L4_TCP,
+				    csum_ok ? PKT_RX_L4_CKSUM_GOOD :
+					      PKT_RX_L4_CKSUM_BAD);
+	else if (cpl->l2info & htonl(F_RXF_UDP))
+		cxgbe_set_mbuf_info(pkt, RTE_PTYPE_L4_UDP,
+				    csum_ok ? PKT_RX_L4_CKSUM_GOOD :
+					      PKT_RX_L4_CKSUM_BAD);
+}
+
 /**
  * process_responses - process responses from an SGE response queue
  * @q: the ingress queue to process
@@ -1482,8 +1527,6 @@ static int process_responses(struct sge_rspq *q, int budget,
 					(const void *)&q->cur_desc[1];
 				struct rte_mbuf *pkt, *npkt;
 				u32 len, bufsz;
-				bool csum_ok;
-				u16 err_vec;
 
 				rc = (const struct rsp_ctrl *)
 				     ((const char *)q->cur_desc +
@@ -1499,16 +1542,6 @@ static int process_responses(struct sge_rspq *q, int budget,
 				npkt = pkt;
 				len = G_RSPD_LEN(len);
 				pkt->pkt_len = len;
-
-				/* Compressed error vector is enabled for
-				 * T6 only
-				 */
-				if (q->adapter->params.tp.rx_pkt_encap)
-					err_vec = G_T6_COMPR_RXERR_VEC(
-							ntohs(cpl->err_vec));
-				else
-					err_vec = ntohs(cpl->err_vec);
-				csum_ok = cpl->csum_calc && !err_vec;
 
 				/* Chain mbufs into len if necessary */
 				while (len) {
@@ -1527,20 +1560,7 @@ static int process_responses(struct sge_rspq *q, int budget,
 				npkt->next = NULL;
 				pkt->nb_segs--;
 
-				if (cpl->l2info & htonl(F_RXF_IP)) {
-					pkt->packet_type = RTE_PTYPE_L3_IPV4;
-					if (unlikely(!csum_ok))
-						pkt->ol_flags |=
-							PKT_RX_IP_CKSUM_BAD;
-
-					if ((cpl->l2info &
-					     htonl(F_RXF_UDP | F_RXF_TCP)) &&
-					    !csum_ok)
-						pkt->ol_flags |=
-							PKT_RX_L4_CKSUM_BAD;
-				} else if (cpl->l2info & htonl(F_RXF_IP6)) {
-					pkt->packet_type = RTE_PTYPE_L3_IPV6;
-				}
+				cxgbe_fill_mbuf_info(q->adapter, cpl, pkt);
 
 				if (!rss_hdr->filter_tid &&
 				    rss_hdr->hash_type) {
@@ -1549,10 +1569,8 @@ static int process_responses(struct sge_rspq *q, int budget,
 						ntohl(rss_hdr->hash_val);
 				}
 
-				if (cpl->vlan_ex) {
-					pkt->ol_flags |= PKT_RX_VLAN;
+				if (cpl->vlan_ex)
 					pkt->vlan_tci = ntohs(cpl->vlan);
-				}
 
 				rxq->stats.pkts++;
 				rxq->stats.rx_bytes += pkt->pkt_len;
@@ -1689,6 +1707,7 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	char z_name[RTE_MEMZONE_NAMESIZE];
 	char z_name_sw[RTE_MEMZONE_NAMESIZE];
 	unsigned int nb_refill;
+	u8 pciechan;
 
 	/* Size needs to be multiple of 16, including status entry. */
 	iq->size = cxgbe_roundup(iq->size, 16);
@@ -1708,6 +1727,9 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	c.op_to_vfn = htonl(V_FW_CMD_OP(FW_IQ_CMD) | F_FW_CMD_REQUEST |
 			    F_FW_CMD_WRITE | F_FW_CMD_EXEC |
 			    V_FW_IQ_CMD_PFN(adap->pf) | V_FW_IQ_CMD_VFN(0));
+
+	pciechan = pi->tx_chan;
+
 	c.alloc_to_len16 = htonl(F_FW_IQ_CMD_ALLOC | F_FW_IQ_CMD_IQSTART |
 				 (sizeof(c) / 16));
 	c.type_to_iqandstindex =
@@ -1719,16 +1741,19 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 		      V_FW_IQ_CMD_IQANDSTINDEX(intr_idx >= 0 ? intr_idx :
 							       -intr_idx - 1));
 	c.iqdroprss_to_iqesize =
-		htons(V_FW_IQ_CMD_IQPCIECH(cong > 0 ? cxgbe_ffs(cong) - 1 :
-						      pi->tx_chan) |
+		htons(V_FW_IQ_CMD_IQPCIECH(pciechan) |
 		      F_FW_IQ_CMD_IQGTSMODE |
 		      V_FW_IQ_CMD_IQINTCNTTHRESH(iq->pktcnt_idx) |
 		      V_FW_IQ_CMD_IQESIZE(ilog2(iq->iqe_len) - 4));
 	c.iqsize = htons(iq->size);
 	c.iqaddr = cpu_to_be64(iq->phys_addr);
 	if (cong >= 0)
-		c.iqns_to_fl0congen = htonl(F_FW_IQ_CMD_IQFLINTCONGEN |
-					    F_FW_IQ_CMD_IQRO);
+		c.iqns_to_fl0congen =
+			htonl(F_FW_IQ_CMD_IQFLINTCONGEN |
+			      V_FW_IQ_CMD_IQTYPE(cong ?
+						 FW_IQ_IQTYPE_NIC :
+						 FW_IQ_IQTYPE_OFLD) |
+			      F_FW_IQ_CMD_IQRO);
 
 	if (fl) {
 		struct sge_eth_rxq *rxq = container_of(fl, struct sge_eth_rxq,

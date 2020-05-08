@@ -239,6 +239,7 @@ extern "C" {
 #endif
 
 #include <rte_common.h>
+#include <rte_config.h>
 #include <rte_memory.h>
 #include <rte_errno.h>
 
@@ -420,9 +421,9 @@ rte_event_dev_info_get(uint8_t dev_id, struct rte_event_dev_info *dev_info);
  * @param[out] attr_value A pointer that will be filled in with the attribute
  *             value if successful.
  *
- * @retval 0 Successfully retrieved attribute value
- *         -EINVAL Invalid device or  *attr_id* provided, or *attr_value*
- *         is NULL
+ * @return
+ *   - 0: Successfully retrieved attribute value
+ *   - -EINVAL: Invalid device or  *attr_id* provided, or *attr_value* is NULL
  */
 int
 rte_event_dev_attr_get(uint8_t dev_id, uint32_t attr_id,
@@ -640,18 +641,22 @@ rte_event_queue_setup(uint8_t dev_id, uint8_t queue_id,
 /**
  * Get an attribute from a queue.
  *
- * @param dev_id Eventdev id
- * @param queue_id Eventdev queue id
- * @param attr_id The attribute ID to retrieve
- * @param[out] attr_value A pointer that will be filled in with the attribute
- *             value if successful
+ * @param dev_id
+ *   Eventdev id
+ * @param queue_id
+ *   Eventdev queue id
+ * @param attr_id
+ *   The attribute ID to retrieve
+ * @param[out] attr_value
+ *   A pointer that will be filled in with the attribute value if successful
  *
- * @retval 0 Successfully returned value
- *         -EINVAL invalid device, queue or attr_id provided, or attr_value
- *         was NULL
- *         -EOVERFLOW returned when attr_id is set to
- *         RTE_EVENT_QUEUE_ATTR_SCHEDULE_TYPE and event_queue_cfg is set to
- *         RTE_EVENT_QUEUE_CFG_ALL_TYPES
+ * @return
+ *   - 0: Successfully returned value
+ *   - -EINVAL: invalid device, queue or attr_id provided, or attr_value was
+ *		NULL
+ *   - -EOVERFLOW: returned when attr_id is set to
+ *   RTE_EVENT_QUEUE_ATTR_SCHEDULE_TYPE and event_queue_cfg is set to
+ *   RTE_EVENT_QUEUE_CFG_ALL_TYPES
  */
 int
 rte_event_queue_attr_get(uint8_t dev_id, uint8_t queue_id, uint32_t attr_id,
@@ -754,14 +759,18 @@ rte_event_port_setup(uint8_t dev_id, uint8_t port_id,
 /**
  * Get an attribute from a port.
  *
- * @param dev_id Eventdev id
- * @param port_id Eventdev port id
- * @param attr_id The attribute ID to retrieve
- * @param[out] attr_value A pointer that will be filled in with the attribute
- *             value if successful
+ * @param dev_id
+ *   Eventdev id
+ * @param port_id
+ *   Eventdev port id
+ * @param attr_id
+ *   The attribute ID to retrieve
+ * @param[out] attr_value
+ *   A pointer that will be filled in with the attribute value if successful
  *
- * @retval 0 Successfully returned value
- *         -EINVAL Invalid device, port or attr_id, or attr_value was NULL
+ * @return
+ *   - 0: Successfully returned value
+ *   - (-EINVAL) Invalid device, port or attr_id, or attr_value was NULL
  */
 int
 rte_event_port_attr_get(uint8_t dev_id, uint8_t port_id, uint32_t attr_id,
@@ -1696,7 +1705,7 @@ rte_event_dev_xstats_names_get(uint8_t dev_id,
  * @param ids
  *   The id numbers of the stats to get. The ids can be got from the stat
  *   position in the stat list from rte_event_dev_get_xstats_names(), or
- *   by using rte_eventdev_get_xstats_by_name()
+ *   by using rte_event_dev_xstats_by_name_get().
  * @param[out] values
  *   The values for each stats request by ID.
  * @param n
@@ -1724,7 +1733,7 @@ rte_event_dev_xstats_get(uint8_t dev_id,
  *   The stat name to retrieve
  * @param[out] id
  *   If non-NULL, the numerical id of the stat will be returned, so that further
- *   requests for the stat can be got using rte_eventdev_xstats_get, which will
+ *   requests for the stat can be got using rte_event_dev_xstats_get, which will
  *   be faster as it doesn't need to scan a list of names for the stat.
  *   If the stat cannot be found, the id returned will be (unsigned)-1.
  * @return

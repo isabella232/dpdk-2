@@ -4607,7 +4607,7 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, u32 *buffer,
 	/* first pull in the header so we know the buffer length */
 	for (bi = 0; bi < dword_len; bi++) {
 		buffer[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG, bi);
-		IXGBE_LE32_TO_CPUS(&buffer[bi]);
+		IXGBE_LE32_TO_CPUS((uintptr_t)&buffer[bi]);
 	}
 
 	/* If there is any thing in data position pull it in */
@@ -4627,7 +4627,7 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, u32 *buffer,
 	/* Pull in the rest of the buffer (bi is where we left off) */
 	for (; bi <= dword_len; bi++) {
 		buffer[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG, bi);
-		IXGBE_LE32_TO_CPUS(&buffer[bi]);
+		IXGBE_LE32_TO_CPUS((uintptr_t)&buffer[bi]);
 	}
 
 rel_out:
@@ -5147,10 +5147,10 @@ s32 ixgbe_setup_mac_link_multispeed_fiber(struct ixgbe_hw *hw,
 		ixgbe_flap_tx_laser(hw);
 
 		/* Wait for the controller to acquire link.  Per IEEE 802.3ap,
-		 * Section 73.10.2, we may have to wait up to 500ms if KR is
+		 * Section 73.10.2, we may have to wait up to 1000ms if KR is
 		 * attempted.  82599 uses the same timing for 10g SFI.
 		 */
-		for (i = 0; i < 5; i++) {
+		for (i = 0; i < 10; i++) {
 			/* Wait for the link partner to also set speed */
 			msec_delay(100);
 

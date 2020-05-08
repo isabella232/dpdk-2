@@ -69,6 +69,8 @@ struct enic_items {
 struct enic_filter_cap {
 	/** list of valid items and their handlers and attributes. */
 	const struct enic_items *item_info;
+	/* Max type in the above list, used to detect unsupported types */
+	enum rte_flow_item_type max_item_type;
 };
 
 /* functions for copying flow actions into enic actions */
@@ -98,7 +100,6 @@ static enic_copy_item_fn enic_copy_item_ipv4_v2;
 static enic_copy_item_fn enic_copy_item_ipv6_v2;
 static enic_copy_item_fn enic_copy_item_udp_v2;
 static enic_copy_item_fn enic_copy_item_tcp_v2;
-static enic_copy_item_fn enic_copy_item_sctp_v2;
 static enic_copy_item_fn enic_copy_item_sctp_v2;
 static enic_copy_item_fn enic_copy_item_vxlan_v2;
 static copy_action_fn enic_copy_action_v1;
@@ -266,7 +267,7 @@ static const struct enic_items enic_items_v3[] = {
 	},
 	[RTE_FLOW_ITEM_TYPE_SCTP] = {
 		.copy_item = enic_copy_item_sctp_v2,
-		.valid_start_item = 1,
+		.valid_start_item = 0,
 		.prev_items = (const enum rte_flow_item_type[]) {
 			       RTE_FLOW_ITEM_TYPE_IPV4,
 			       RTE_FLOW_ITEM_TYPE_IPV6,
@@ -287,12 +288,15 @@ static const struct enic_items enic_items_v3[] = {
 static const struct enic_filter_cap enic_filter_cap[] = {
 	[FILTER_IPV4_5TUPLE] = {
 		.item_info = enic_items_v1,
+		.max_item_type = RTE_FLOW_ITEM_TYPE_TCP,
 	},
 	[FILTER_USNIC_IP] = {
 		.item_info = enic_items_v2,
+		.max_item_type = RTE_FLOW_ITEM_TYPE_VXLAN,
 	},
 	[FILTER_DPDK_1] = {
 		.item_info = enic_items_v3,
+		.max_item_type = RTE_FLOW_ITEM_TYPE_VXLAN,
 	},
 };
 
@@ -818,11 +822,36 @@ enic_copy_item_sctp_v2(const struct rte_flow_item *item,
 	const struct rte_flow_item_sctp *spec = item->spec;
 	const struct rte_flow_item_sctp *mask = item->mask;
 	struct filter_generic_1 *gp = &enic_filter->u.generic_1;
+	uint8_t *ip_proto_mask = NULL;
+	uint8_t *ip_proto = NULL;
 
 	FLOW_TRACE();
 
 	if (*inner_ofst)
 		return ENOTSUP;
+
+	/*
+	 * The NIC filter API has no flags for "match sctp", so explicitly set
+	 * the protocol number in the IP pattern.
+	 */
+	if (gp->val_flags & FILTER_GENERIC_1_IPV4) {
+		struct ipv4_hdr *ip;
+		ip = (struct ipv4_hdr *)gp->layer[FILTER_GENERIC_1_L3].mask;
+		ip_proto_mask = &ip->next_proto_id;
+		ip = (struct ipv4_hdr *)gp->layer[FILTER_GENERIC_1_L3].val;
+		ip_proto = &ip->next_proto_id;
+	} else if (gp->val_flags & FILTER_GENERIC_1_IPV6) {
+		struct ipv6_hdr *ip;
+		ip = (struct ipv6_hdr *)gp->layer[FILTER_GENERIC_1_L3].mask;
+		ip_proto_mask = &ip->proto;
+		ip = (struct ipv6_hdr *)gp->layer[FILTER_GENERIC_1_L3].val;
+		ip_proto = &ip->proto;
+	} else {
+		/* Need IPv4/IPv6 pattern first */
+		return EINVAL;
+	}
+	*ip_proto = IPPROTO_SCTP;
+	*ip_proto_mask = 0xff;
 
 	/* Match all if no spec */
 	if (!spec)
@@ -921,7 +950,7 @@ item_stacking_valid(enum rte_flow_item_type prev_item,
  */
 static int
 enic_copy_filter(const struct rte_flow_item pattern[],
-		 const struct enic_items *items_info,
+		 const struct enic_filter_cap *cap,
 		 struct filter_v2 *enic_filter,
 		 struct rte_flow_error *error)
 {
@@ -944,7 +973,14 @@ enic_copy_filter(const struct rte_flow_item pattern[],
 		if (item->type == RTE_FLOW_ITEM_TYPE_VOID)
 			continue;
 
-		item_info = &items_info[item->type];
+		item_info = &cap->item_info[item->type];
+		if (item->type > cap->max_item_type ||
+		    item_info->copy_item == NULL) {
+			rte_flow_error_set(error, ENOTSUP,
+				RTE_FLOW_ERROR_TYPE_ITEM,
+				NULL, "Unsupported item.");
+			return -rte_errno;
+		}
 
 		/* check to see if item stacking is valid */
 		if (!item_stacking_valid(prev_item, item_info, is_first_item))
@@ -1344,7 +1380,7 @@ enic_flow_parse(struct rte_eth_dev *dev,
 		return -rte_errno;
 	}
 	enic_filter->type = enic->flow_filter_mode;
-	ret = enic_copy_filter(pattern, enic_filter_cap->item_info,
+	ret = enic_copy_filter(pattern, enic_filter_cap,
 				       enic_filter, error);
 	return ret;
 }
@@ -1503,6 +1539,7 @@ enic_flow_destroy(struct rte_eth_dev *dev, struct rte_flow *flow,
 	enic_flow_del_filter(enic, flow->enic_filter_id, error);
 	LIST_REMOVE(flow, next);
 	rte_spinlock_unlock(&enic->flows_lock);
+	rte_free(flow);
 	return 0;
 }
 
@@ -1526,6 +1563,7 @@ enic_flow_flush(struct rte_eth_dev *dev, struct rte_flow_error *error)
 		flow = LIST_FIRST(&enic->flows);
 		enic_flow_del_filter(enic, flow->enic_filter_id, error);
 		LIST_REMOVE(flow, next);
+		rte_free(flow);
 	}
 	rte_spinlock_unlock(&enic->flows_lock);
 	return 0;

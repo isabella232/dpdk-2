@@ -54,6 +54,9 @@ struct octeontx_vdev_init_params {
 	uint8_t	nr_port;
 };
 
+uint16_t
+rte_octeontx_pchan_map[OCTEONTX_MAX_BGX_PORTS][OCTEONTX_MAX_LMAC_PER_BGX];
+
 enum octeontx_link_speed {
 	OCTEONTX_LINK_SPEED_SGMII,
 	OCTEONTX_LINK_SPEED_XAUI,
@@ -124,7 +127,7 @@ octeontx_port_open(struct octeontx_nic *nic)
 	int res;
 
 	res = 0;
-
+	memset(&bgx_port_conf, 0x0, sizeof(bgx_port_conf));
 	PMD_INIT_FUNC_TRACE();
 
 	res = octeontx_bgx_port_open(nic->port_id, &bgx_port_conf);
@@ -374,6 +377,9 @@ octeontx_dev_close(struct rte_eth_dev *dev)
 
 		rte_free(txq);
 	}
+
+	dev->tx_pkt_burst = NULL;
+	dev->rx_pkt_burst = NULL;
 }
 
 static int
@@ -467,9 +473,6 @@ octeontx_dev_stop(struct rte_eth_dev *dev)
 			     ret);
 		return;
 	}
-
-	dev->tx_pkt_burst = NULL;
-	dev->rx_pkt_burst = NULL;
 }
 
 static void
@@ -534,7 +537,6 @@ octeontx_dev_link_update(struct rte_eth_dev *dev,
 	struct rte_eth_link link;
 	int res;
 
-	res = 0;
 	PMD_INIT_FUNC_TRACE();
 
 	res = octeontx_port_link_status(nic);
@@ -568,12 +570,13 @@ octeontx_dev_link_update(struct rte_eth_dev *dev,
 	case OCTEONTX_LINK_SPEED_RESERVE1:
 	case OCTEONTX_LINK_SPEED_RESERVE2:
 	default:
+		link.link_speed = ETH_SPEED_NUM_NONE;
 		octeontx_log_err("incorrect link speed %d", nic->speed);
 		break;
 	}
 
-	link.link_duplex = ETH_LINK_AUTONEG;
-	link.link_autoneg = ETH_LINK_SPEED_AUTONEG;
+	link.link_duplex = ETH_LINK_FULL_DUPLEX;
+	link.link_autoneg = ETH_LINK_AUTONEG;
 
 	return octeontx_atomic_write_link_status(dev, &link);
 }
@@ -889,10 +892,11 @@ octeontx_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 		pktbuf_conf.mmask.f_cache_mode = 1;
 
 		pktbuf_conf.wqe_skip = OCTTX_PACKET_WQE_SKIP;
-		pktbuf_conf.first_skip = OCTTX_PACKET_FIRST_SKIP;
+		pktbuf_conf.first_skip = OCTTX_PACKET_FIRST_SKIP(mb_pool);
 		pktbuf_conf.later_skip = OCTTX_PACKET_LATER_SKIP;
 		pktbuf_conf.mbuff_size = (mb_pool->elt_size -
 					RTE_PKTMBUF_HEADROOM -
+					rte_pktmbuf_priv_size(mb_pool) -
 					sizeof(struct rte_mbuf));
 
 		pktbuf_conf.cache_mode = PKI_OPC_MODE_STF2_STT;
@@ -1029,7 +1033,7 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	char octtx_name[OCTEONTX_MAX_NAME_LEN];
 	struct octeontx_nic *nic = NULL;
 	struct rte_eth_dev *eth_dev = NULL;
-	struct rte_eth_dev_data *data = NULL;
+	struct rte_eth_dev_data *data;
 	const char *name = rte_vdev_device_name(dev);
 
 	PMD_INIT_FUNC_TRACE();
@@ -1043,13 +1047,6 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 		eth_dev->tx_pkt_burst = octeontx_xmit_pkts;
 		eth_dev->rx_pkt_burst = octeontx_recv_pkts;
 		return 0;
-	}
-
-	data = rte_zmalloc_socket(octtx_name, sizeof(*data), 0, socket_id);
-	if (data == NULL) {
-		octeontx_log_err("failed to allocate devdata");
-		res = -ENOMEM;
-		goto err;
 	}
 
 	nic = rte_zmalloc_socket(octtx_name, sizeof(*nic), 0, socket_id);
@@ -1087,11 +1084,9 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	eth_dev->data->kdrv = RTE_KDRV_NONE;
 	eth_dev->data->numa_node = dev->device.numa_node;
 
-	rte_memcpy(data, (eth_dev)->data, sizeof(*data));
+	data = eth_dev->data;
 	data->dev_private = nic;
-
 	data->port_id = eth_dev->data->port_id;
-	snprintf(data->name, sizeof(data->name), "%s", eth_dev->data->name);
 
 	nic->ev_queues = 1;
 	nic->ev_ports = 1;
@@ -1110,7 +1105,6 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 		goto err;
 	}
 
-	eth_dev->data = data;
 	eth_dev->dev_ops = &octeontx_dev_ops;
 
 	/* Finally save ethdev pointer to the NIC structure */
@@ -1133,10 +1127,13 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 				nic->num_tx_queues);
 	PMD_INIT_LOG(DEBUG, "speed %d mtu %d", nic->speed, nic->mtu);
 
+	rte_octeontx_pchan_map[(nic->base_ochan >> 8) & 0x7]
+		[(nic->base_ochan >> 4) & 0xF] = data->port_id;
+
 	return data->port_id;
 
 err:
-	if (port)
+	if (nic)
 		octeontx_port_close(nic);
 
 	if (eth_dev != NULL) {
@@ -1175,7 +1172,6 @@ octeontx_remove(struct rte_vdev_device *dev)
 
 		rte_free(eth_dev->data->mac_addrs);
 		rte_free(eth_dev->data->dev_private);
-		rte_free(eth_dev->data);
 		rte_eth_dev_release_port(eth_dev);
 		rte_event_dev_close(nic->evdev);
 	}
@@ -1257,15 +1253,8 @@ octeontx_probe(struct rte_vdev_device *dev)
 		res = -EINVAL;
 		goto parse_error;
 	}
-	if (pnum > qnum) {
-		/*
-		 * We don't poll on event ports
-		 * that do not have any queues assigned.
-		 */
-		pnum = qnum;
-		PMD_INIT_LOG(INFO,
-			"reducing number of active event ports to %d", pnum);
-	}
+
+	/* Enable all queues available */
 	for (i = 0; i < qnum; i++) {
 		res = rte_event_queue_setup(evdev, i, NULL);
 		if (res < 0) {
@@ -1275,6 +1264,7 @@ octeontx_probe(struct rte_vdev_device *dev)
 		}
 	}
 
+	/* Enable all ports available */
 	for (i = 0; i < pnum; i++) {
 		res = rte_event_port_setup(evdev, i, NULL);
 		if (res < 0) {
@@ -1283,6 +1273,14 @@ octeontx_probe(struct rte_vdev_device *dev)
 						i, res);
 			goto parse_error;
 		}
+	}
+
+	/*
+	 * Do 1:1 links for ports & queues. All queues would be mapped to
+	 * one port. If there are more ports than queues, then some ports
+	 * won't be linked to any queue.
+	 */
+	for (i = 0; i < qnum; i++) {
 		/* Link one queue to one event port */
 		qlist = i;
 		res = rte_event_port_link(evdev, i, &qlist, NULL, 1);

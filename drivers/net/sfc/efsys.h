@@ -109,7 +109,7 @@ typedef bool boolean_t;
 #define P2ALIGN(_x, _a)		((_x) & -(_a))
 #endif
 
-#ifndef IS2P
+#ifndef ISP2
 #define ISP2(x)			rte_is_power_of_2(x)
 #endif
 
@@ -141,6 +141,8 @@ prefetch_read_once(const volatile void *addr)
 #define __out_ecount_opt(_n)
 #define __out_bcount(_n)
 #define __out_bcount_opt(_n)
+#define __out_bcount_part(_n, _l)
+#define __out_bcount_part_opt(_n, _l)
 
 #define __deref_out
 

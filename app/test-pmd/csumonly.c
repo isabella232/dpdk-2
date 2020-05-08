@@ -135,7 +135,9 @@ parse_ipv4(struct ipv4_hdr *ipv4_hdr, struct testpmd_offload_info *info)
 	if (info->l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct tcp_hdr *)((char *)ipv4_hdr + info->l3_len);
 		info->l4_len = (tcp_hdr->data_off & 0xf0) >> 2;
-	} else
+	} else if (info->l4_proto == IPPROTO_UDP)
+		info->l4_len = sizeof(struct udp_hdr);
+	else
 		info->l4_len = 0;
 }
 
@@ -152,7 +154,9 @@ parse_ipv6(struct ipv6_hdr *ipv6_hdr, struct testpmd_offload_info *info)
 	if (info->l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct tcp_hdr *)((char *)ipv6_hdr + info->l3_len);
 		info->l4_len = (tcp_hdr->data_off & 0xf0) >> 2;
-	} else
+	} else if (info->l4_proto == IPPROTO_UDP)
+		info->l4_len = sizeof(struct udp_hdr);
+	else
 		info->l4_len = 0;
 }
 
@@ -428,6 +432,9 @@ process_outer_cksums(void *outer_l3_hdr, struct testpmd_offload_info *info,
 
 	udp_hdr = (struct udp_hdr *)((char *)outer_l3_hdr + info->outer_l3_len);
 
+	if (tso_enabled)
+		ol_flags |= PKT_TX_TCP_SEG;
+
 	/* outer UDP checksum is done in software as we have no hardware
 	 * supporting it today, and no API for it. In the other side, for
 	 * UDP tunneling, like VXLAN or Geneve, outer UDP checksum can be
@@ -524,7 +531,7 @@ mbuf_copy_split(const struct rte_mbuf *ms, struct rte_mbuf *md[],
 
 /*
  * Allocate a new mbuf with up to tx_pkt_nb_segs segments.
- * Copy packet contents and offload information into then new segmented mbuf.
+ * Copy packet contents and offload information into the new segmented mbuf.
  */
 static struct rte_mbuf *
 pkt_copy_split(const struct rte_mbuf *pkt)

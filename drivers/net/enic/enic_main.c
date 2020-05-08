@@ -37,7 +37,6 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fcntl.h>
-#include <libgen.h>
 
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
@@ -782,25 +781,23 @@ int enic_alloc_wq(struct enic *enic, uint16_t queue_idx,
 	static int instance;
 
 	wq->socket_id = socket_id;
-	if (nb_desc) {
-		if (nb_desc > enic->config.wq_desc_count) {
-			dev_warning(enic,
-				"WQ %d - number of tx desc in cmd line (%d)"\
-				"is greater than that in the UCSM/CIMC adapter"\
-				"policy.  Applying the value in the adapter "\
-				"policy (%d)\n",
-				queue_idx, nb_desc, enic->config.wq_desc_count);
-		} else if (nb_desc != enic->config.wq_desc_count) {
-			enic->config.wq_desc_count = nb_desc;
-			dev_info(enic,
-				"TX Queues - effective number of descs:%d\n",
-				nb_desc);
-		}
+	if (nb_desc > enic->config.wq_desc_count) {
+		dev_warning(enic,
+			    "WQ %d - number of tx desc in cmd line (%d) "
+			    "is greater than that in the UCSM/CIMC adapter "
+			    "policy.  Applying the value in the adapter "
+			    "policy (%d)\n",
+			    queue_idx, nb_desc, enic->config.wq_desc_count);
+		nb_desc = enic->config.wq_desc_count;
+	} else if (nb_desc != enic->config.wq_desc_count) {
+		dev_info(enic,
+			 "TX Queues - effective number of descs:%d\n",
+			 nb_desc);
 	}
 
 	/* Allocate queue resources */
 	err = vnic_wq_alloc(enic->vdev, &enic->wq[queue_idx], queue_idx,
-		enic->config.wq_desc_count,
+		nb_desc,
 		sizeof(struct wq_enet_desc));
 	if (err) {
 		dev_err(enic, "error in allocation of wq\n");
@@ -808,7 +805,7 @@ int enic_alloc_wq(struct enic *enic, uint16_t queue_idx,
 	}
 
 	err = vnic_cq_alloc(enic->vdev, &enic->cq[cq_index], cq_index,
-		socket_id, enic->config.wq_desc_count,
+		socket_id, nb_desc,
 		sizeof(struct cq_enet_wq_desc));
 	if (err) {
 		vnic_wq_free(wq);
@@ -1075,6 +1072,9 @@ static void enic_dev_deinit(struct enic *enic)
 	vnic_dev_notify_unset(enic->vdev);
 
 	rte_free(eth_dev->data->mac_addrs);
+	rte_free(enic->cq);
+	rte_free(enic->rq);
+	rte_free(enic->wq);
 }
 
 
@@ -1082,27 +1082,28 @@ int enic_set_vnic_res(struct enic *enic)
 {
 	struct rte_eth_dev *eth_dev = enic->rte_dev;
 	int rc = 0;
+	unsigned int required_rq, required_wq, required_cq;
 
-	/* With Rx scatter support, two RQs are now used per RQ used by
-	 * the application.
-	 */
-	if (enic->conf_rq_count < eth_dev->data->nb_rx_queues) {
+	/* Always use two vNIC RQs per eth_dev RQ, regardless of Rx scatter. */
+	required_rq = eth_dev->data->nb_rx_queues * 2;
+	required_wq = eth_dev->data->nb_tx_queues;
+	required_cq = eth_dev->data->nb_rx_queues + eth_dev->data->nb_tx_queues;
+
+	if (enic->conf_rq_count < required_rq) {
 		dev_err(dev, "Not enough Receive queues. Requested:%u which uses %d RQs on VIC, Configured:%u\n",
 			eth_dev->data->nb_rx_queues,
-			eth_dev->data->nb_rx_queues * 2, enic->conf_rq_count);
+			required_rq, enic->conf_rq_count);
 		rc = -EINVAL;
 	}
-	if (enic->conf_wq_count < eth_dev->data->nb_tx_queues) {
+	if (enic->conf_wq_count < required_wq) {
 		dev_err(dev, "Not enough Transmit queues. Requested:%u, Configured:%u\n",
 			eth_dev->data->nb_tx_queues, enic->conf_wq_count);
 		rc = -EINVAL;
 	}
 
-	if (enic->conf_cq_count < (eth_dev->data->nb_rx_queues +
-				   eth_dev->data->nb_tx_queues)) {
+	if (enic->conf_cq_count < required_cq) {
 		dev_err(dev, "Not enough Completion queues. Required:%u, Configured:%u\n",
-			(eth_dev->data->nb_rx_queues +
-			 eth_dev->data->nb_tx_queues), enic->conf_cq_count);
+			required_cq, enic->conf_cq_count);
 		rc = -EINVAL;
 	}
 
@@ -1248,6 +1249,8 @@ int enic_set_mtu(struct enic *enic, uint16_t new_mtu)
 	/* free and reallocate RQs with the new MTU */
 	for (rq_idx = 0; rq_idx < enic->rq_count; rq_idx++) {
 		rq = &enic->rq[enic_rte_rq_idx_to_sop_idx(rq_idx)];
+		if (!rq->in_use)
+			continue;
 
 		enic_free_rq(rq);
 		rc = enic_alloc_rq(enic, rq_idx, rq->socket_id, rq->mp,
@@ -1307,6 +1310,25 @@ static int enic_dev_init(struct enic *enic)
 		dev_err(enic, "See the ENIC PMD guide for more information.\n");
 		return -EINVAL;
 	}
+	/* Queue counts may be zeros. rte_zmalloc returns NULL in that case. */
+	enic->cq = rte_zmalloc("enic_vnic_cq", sizeof(struct vnic_cq) *
+			       enic->conf_cq_count, 8);
+	enic->rq = rte_zmalloc("enic_vnic_rq", sizeof(struct vnic_rq) *
+			       enic->conf_rq_count, 8);
+	enic->wq = rte_zmalloc("enic_vnic_wq", sizeof(struct vnic_wq) *
+			       enic->conf_wq_count, 8);
+	if (enic->conf_cq_count > 0 && enic->cq == NULL) {
+		dev_err(enic, "failed to allocate vnic_cq, aborting.\n");
+		return -1;
+	}
+	if (enic->conf_rq_count > 0 && enic->rq == NULL) {
+		dev_err(enic, "failed to allocate vnic_rq, aborting.\n");
+		return -1;
+	}
+	if (enic->conf_wq_count > 0 && enic->wq == NULL) {
+		dev_err(enic, "failed to allocate vnic_wq, aborting.\n");
+		return -1;
+	}
 
 	/* Get the supported filters */
 	enic_fdir_info(enic);
@@ -1360,6 +1382,15 @@ int enic_probe(struct enic *enic)
 		enic_alloc_consistent,
 		enic_free_consistent);
 
+	/*
+	 * Allocate the consistent memory for stats upfront so both primary and
+	 * secondary processes can dump stats.
+	 */
+	err = vnic_dev_alloc_stats_mem(enic->vdev);
+	if (err) {
+		dev_err(enic, "Failed to allocate cmd memory, aborting\n");
+		goto err_out_unregister;
+	}
 	/* Issue device open to get device in known state */
 	err = enic_dev_open(enic);
 	if (err) {
@@ -1368,8 +1399,10 @@ int enic_probe(struct enic *enic)
 	}
 
 	/* Set ingress vlan rewrite mode before vnic initialization */
+	dev_debug(enic, "Set ig_vlan_rewrite_mode=%u\n",
+		  enic->ig_vlan_rewrite_mode);
 	err = vnic_dev_set_ig_vlan_rewrite_mode(enic->vdev,
-		IG_VLAN_REWRITE_MODE_PASS_THRU);
+		enic->ig_vlan_rewrite_mode);
 	if (err) {
 		dev_err(enic,
 			"Failed to set ingress vlan rewrite mode, aborting.\n");

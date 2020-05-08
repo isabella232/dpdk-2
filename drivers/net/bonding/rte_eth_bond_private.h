@@ -118,6 +118,7 @@ struct bond_dev_private {
 	uint8_t mode;						/**< Link Bonding Mode */
 
 	rte_spinlock_t lock;
+	rte_spinlock_t lsc_lock;
 
 	uint16_t primary_port;			/**< Primary Slave Port */
 	uint16_t current_primary_port;		/**< Primary Slave Port */
@@ -181,6 +182,9 @@ struct bond_dev_private {
 };
 
 extern const struct eth_dev_ops default_dev_ops;
+
+int
+check_for_master_bonded_ethdev(const struct rte_eth_dev *eth_dev);
 
 int
 check_for_bonded_ethdev(const struct rte_eth_dev *eth_dev);

@@ -60,7 +60,6 @@
 #include <net/if.h>
 #include <linux/if_tun.h>
 #include <linux/if_ether.h>
-#include <linux/version.h>
 #include <fcntl.h>
 
 #include <rte_eth_tap.h>
@@ -77,9 +76,6 @@
 #define ETH_TAP_REMOTE_ARG      "remote"
 #define ETH_TAP_MAC_ARG         "mac"
 #define ETH_TAP_MAC_FIXED       "fixed"
-
-#define FLOWER_KERNEL_VERSION KERNEL_VERSION(4, 2, 0)
-#define FLOWER_VLAN_KERNEL_VERSION KERNEL_VERSION(4, 9, 0)
 
 static struct rte_vdev_driver pmd_tap_drv;
 
@@ -99,7 +95,7 @@ static struct rte_eth_link pmd_link = {
 	.link_speed = ETH_SPEED_NUM_10G,
 	.link_duplex = ETH_LINK_FULL_DUPLEX,
 	.link_status = ETH_LINK_DOWN,
-	.link_autoneg = ETH_LINK_SPEED_AUTONEG
+	.link_autoneg = ETH_LINK_FIXED,
 };
 
 static void
@@ -226,7 +222,7 @@ tun_alloc(struct pmd_internals *pmd)
 	return fd;
 
 error:
-	if (fd > 0)
+	if (fd >= 0)
 		close(fd);
 	return -1;
 }
@@ -259,13 +255,27 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 		l3_len = 4 * (iph->version_ihl & 0xf);
 		if (unlikely(l2_len + l3_len > rte_pktmbuf_data_len(mbuf)))
 			return;
+		/* check that the total length reported by header is not
+		 * greater than the total received size
+		 */
+		if (l2_len + rte_be_to_cpu_16(iph->total_length) >
+				rte_pktmbuf_data_len(mbuf))
+			return;
 
 		cksum = ~rte_raw_cksum(iph, l3_len);
 		mbuf->ol_flags |= cksum ?
 			PKT_RX_IP_CKSUM_BAD :
 			PKT_RX_IP_CKSUM_GOOD;
 	} else if (l3 == RTE_PTYPE_L3_IPV6) {
+		struct ipv6_hdr *iph = l3_hdr;
+
 		l3_len = sizeof(struct ipv6_hdr);
+		/* check that the total length reported by header is not
+		 * greater than the total received size
+		 */
+		if (l2_len + l3_len + rte_be_to_cpu_16(iph->payload_len) >
+				rte_pktmbuf_data_len(mbuf))
+			return;
 	} else {
 		/* IPv6 extensions are not supported */
 		return;
@@ -298,9 +308,7 @@ pmd_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 
 	if (trigger == rxq->trigger_seen)
 		return 0;
-	if (trigger)
-		rxq->trigger_seen = trigger;
-	rte_compiler_barrier();
+
 	for (num_rx = 0; num_rx < nb_pkts; ) {
 		struct rte_mbuf *mbuf = rxq->pool;
 		struct rte_mbuf *seg = NULL;
@@ -375,6 +383,9 @@ pmd_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 end:
 	rxq->stats.ipackets += num_rx;
 	rxq->stats.ibytes += num_rx_bytes;
+
+	if (trigger && num_rx < nb_pkts)
+		rxq->trigger_seen = trigger;
 
 	return num_rx;
 }
@@ -548,7 +559,9 @@ apply:
 	case SIOCSIFMTU:
 		break;
 	default:
-		RTE_ASSERT(!"unsupported request type: must not happen");
+		RTE_LOG(WARNING, PMD, "%s: ioctl() called with wrong arg\n",
+			pmd->name);
+		return -EINVAL;
 	}
 	if (ioctl(pmd->ioctl_sock, request, ifr) < 0)
 		goto error;
@@ -1241,16 +1254,10 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, char *tap_name,
 
 	RTE_LOG(DEBUG, PMD, "  TAP device on numa %u\n", rte_socket_id());
 
-	data = rte_zmalloc_socket(tap_name, sizeof(*data), 0, numa_node);
-	if (!data) {
-		RTE_LOG(ERR, PMD, "TAP Failed to allocate data\n");
-		goto error_exit;
-	}
-
 	dev = rte_eth_vdev_allocate(vdev, sizeof(*pmd));
 	if (!dev) {
 		RTE_LOG(ERR, PMD, "TAP Unable to allocate device struct\n");
-		goto error_exit;
+		goto error_exit_nodev;
 	}
 
 	pmd = dev->data->dev_private;
@@ -1266,7 +1273,7 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, char *tap_name,
 	}
 
 	/* Setup some default values */
-	rte_memcpy(data, dev->data, sizeof(*data));
+	data = dev->data;
 	data->dev_private = pmd;
 	data->dev_flags = RTE_ETH_DEV_INTR_LSC;
 	data->numa_node = numa_node;
@@ -1277,7 +1284,6 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, char *tap_name,
 	data->nb_rx_queues = 0;
 	data->nb_tx_queues = 0;
 
-	dev->data = data;
 	dev->dev_ops = &ops;
 	dev->rx_pkt_burst = pmd_rx_burst;
 	dev->tx_pkt_burst = pmd_tx_burst;
@@ -1420,10 +1426,14 @@ error_remote:
 	tap_flow_implicit_flush(pmd, NULL);
 
 error_exit:
+	if (pmd->ioctl_sock > 0)
+		close(pmd->ioctl_sock);
+	rte_eth_dev_release_port(dev);
+
+error_exit_nodev:
 	RTE_LOG(ERR, PMD, "TAP Unable to initialize %s\n",
 		rte_vdev_device_name(vdev));
 
-	rte_free(data);
 	return -EINVAL;
 }
 
@@ -1594,7 +1604,6 @@ rte_pmd_tap_remove(struct rte_vdev_device *dev)
 
 	close(internals->ioctl_sock);
 	rte_free(eth_dev->data->dev_private);
-	rte_free(eth_dev->data);
 
 	rte_eth_dev_release_port(eth_dev);
 

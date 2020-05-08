@@ -1144,11 +1144,11 @@ dpaa2_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	union dpni_statistics value[3] = {};
 	unsigned int i = 0, num = RTE_DIM(dpaa2_xstats_strings);
 
-	if (xstats == NULL)
-		return 0;
-
 	if (n < num)
 		return num;
+
+	if (xstats == NULL)
+		return 0;
 
 	/* Get Counters from page_0*/
 	retcode = dpni_get_statistics(dpni, CMD_PRI_LOW, priv->token,
@@ -1182,9 +1182,12 @@ err:
 static int
 dpaa2_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
 		       struct rte_eth_xstat_name *xstats_names,
-		       __rte_unused unsigned int limit)
+		       unsigned int limit)
 {
 	unsigned int i, stat_cnt = RTE_DIM(dpaa2_xstats_strings);
+
+	if (limit < stat_cnt)
+		return stat_cnt;
 
 	if (xstats_names != NULL)
 		for (i = 0; i < stat_cnt; i++)
@@ -1759,8 +1762,15 @@ dpaa2_dev_init(struct rte_eth_dev *eth_dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* For secondary processes, the primary has done all the work */
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		/* In case of secondary, only burst and ops API need to be
+		 * plugged.
+		 */
+		eth_dev->dev_ops = &dpaa2_ethdev_ops;
+		eth_dev->rx_pkt_burst = dpaa2_dev_prefetch_rx;
+		eth_dev->tx_pkt_burst = dpaa2_dev_tx;
 		return 0;
+	}
 
 	dpaa2_dev = container_of(dev, struct rte_dpaa2_device, device);
 

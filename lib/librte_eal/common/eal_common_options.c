@@ -232,7 +232,7 @@ eal_plugin_add(const char *path)
 		return -1;
 	}
 	memset(solib, 0, sizeof(*solib));
-	strncpy(solib->name, path, PATH_MAX-1);
+	strlcpy(solib->name, path, PATH_MAX-1);
 	solib->name[PATH_MAX-1] = 0;
 	TAILQ_INSERT_TAIL(&solib_list, solib, next);
 
@@ -529,20 +529,17 @@ static int
 eal_parse_corelist(const char *corelist)
 {
 	struct rte_config *cfg = rte_eal_get_configuration();
-	int i, idx = 0;
 	unsigned count = 0;
 	char *end = NULL;
 	int min, max;
+	int idx;
 
 	if (corelist == NULL)
 		return -1;
 
-	/* Remove all blank characters ahead and after */
+	/* Remove all blank characters ahead */
 	while (isblank(*corelist))
 		corelist++;
-	i = strlen(corelist);
-	while ((i > 0) && isblank(corelist[i - 1]))
-		i--;
 
 	/* Reset config */
 	for (idx = 0; idx < RTE_MAX_LCORE; idx++) {
@@ -558,7 +555,9 @@ eal_parse_corelist(const char *corelist)
 		if (*corelist == '\0')
 			return -1;
 		errno = 0;
-		idx = strtoul(corelist, &end, 10);
+		idx = strtol(corelist, &end, 10);
+		if (idx < 0 || idx >= (int)cfg->lcore_count)
+			return -1;
 		if (errno || end == NULL)
 			return -1;
 		while (isblank(*end))
@@ -1000,6 +999,7 @@ eal_parse_common_option(int opt, const char *optarg,
 {
 	static int b_used;
 	static int w_used;
+	struct rte_config *cfg = rte_eal_get_configuration();
 
 	switch (opt) {
 	/* blacklist */
@@ -1033,7 +1033,9 @@ eal_parse_common_option(int opt, const char *optarg,
 	/* corelist */
 	case 'l':
 		if (eal_parse_corelist(optarg) < 0) {
-			RTE_LOG(ERR, EAL, "invalid core list\n");
+			RTE_LOG(ERR, EAL,
+				"invalid core list, please check core numbers are in [0, %u] range\n",
+					cfg->lcore_count-1);
 			return -1;
 		}
 		core_parsed = 1;
@@ -1178,10 +1180,9 @@ eal_auto_detect_cores(struct rte_config *cfg)
 	unsigned int lcore_id;
 	unsigned int removed = 0;
 	rte_cpuset_t affinity_set;
-	pthread_t tid = pthread_self();
 
-	if (pthread_getaffinity_np(tid, sizeof(rte_cpuset_t),
-				&affinity_set) < 0)
+	if (pthread_getaffinity_np(pthread_self(), sizeof(rte_cpuset_t),
+				&affinity_set))
 		CPU_ZERO(&affinity_set);
 
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
@@ -1210,6 +1211,8 @@ eal_adjust_config(struct internal_config *internal_cfg)
 	/* default master lcore is the first one */
 	if (!master_lcore_parsed) {
 		cfg->master_lcore = rte_get_next_lcore(-1, 0, 0);
+		if (cfg->master_lcore >= RTE_MAX_LCORE)
+			return -1;
 		lcore_config[cfg->master_lcore].core_role = ROLE_RTE;
 	}
 
@@ -1233,6 +1236,16 @@ eal_check_common_options(struct internal_config *internal_cfg)
 
 	if (internal_cfg->process_type == RTE_PROC_INVALID) {
 		RTE_LOG(ERR, EAL, "Invalid process type specified\n");
+		return -1;
+	}
+	if (internal_cfg->hugefile_prefix != NULL &&
+			strlen(internal_cfg->hugefile_prefix) < 1) {
+		RTE_LOG(ERR, EAL, "Invalid length of --" OPT_FILE_PREFIX " option\n");
+		return -1;
+	}
+	if (internal_cfg->hugepage_dir != NULL &&
+			strlen(internal_cfg->hugepage_dir) < 1) {
+		RTE_LOG(ERR, EAL, "Invalid length of --" OPT_HUGE_DIR" option\n");
 		return -1;
 	}
 	if (index(internal_cfg->hugefile_prefix, '%') != NULL) {

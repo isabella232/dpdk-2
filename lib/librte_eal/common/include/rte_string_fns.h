@@ -44,6 +44,9 @@
 extern "C" {
 #endif
 
+#include <stdio.h>
+#include <string.h>
+
 /**
  * Takes string "string" parameter and splits it at character "delim"
  * up to maxtokens-1 times - to give "maxtokens" resulting tokens. Like
@@ -73,6 +76,49 @@ extern "C" {
 int
 rte_strsplit(char *string, int stringlen,
              char **tokens, int maxtokens, char delim);
+
+/**
+ * @internal
+ * DPDK-specific version of strlcpy for systems without
+ * libc or libbsd copies of the function
+ */
+static inline size_t
+rte_strlcpy(char *dst, const char *src, size_t size)
+{
+	return (size_t)snprintf(dst, size, "%s", src);
+}
+
+/**
+ * @internal
+ * DPDK-specific version of strlcat for systems without
+ * libc or libbsd copies of the function
+ */
+static inline size_t
+rte_strlcat(char *dst, const char *src, size_t size)
+{
+	size_t l = strnlen(dst, size);
+	if (l < size)
+		return l + rte_strlcpy(&dst[l], src, size - l);
+	return l + strlen(src);
+}
+
+/* pull in a strlcpy function */
+#ifdef RTE_EXEC_ENV_BSDAPP
+#ifndef __BSD_VISIBLE /* non-standard functions are hidden */
+#define strlcpy(dst, src, size) rte_strlcpy(dst, src, size)
+#define strlcat(dst, src, size) rte_strlcat(dst, src, size)
+#endif
+
+#else /* non-BSD platforms */
+#ifdef RTE_USE_LIBBSD
+#include <bsd/string.h>
+
+#else /* no BSD header files, create own */
+#define strlcpy(dst, src, size) rte_strlcpy(dst, src, size)
+#define strlcat(dst, src, size) rte_strlcat(dst, src, size)
+
+#endif /* RTE_USE_LIBBSD */
+#endif /* BSDAPP */
 
 #ifdef __cplusplus
 }

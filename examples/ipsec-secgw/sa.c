@@ -101,7 +101,7 @@ const struct supported_cipher_algo cipher_algos[] = {
 		.keyword = "aes-128-ctr",
 		.algo = RTE_CRYPTO_CIPHER_AES_CTR,
 		.iv_len = 8,
-		.block_size = 16, /* XXX AESNI MB limition, should be 4 */
+		.block_size = 4,
 		.key_len = 20
 	}
 };
@@ -123,7 +123,7 @@ const struct supported_auth_algo auth_algos[] = {
 	{
 		.keyword = "sha256-hmac",
 		.algo = RTE_CRYPTO_AUTH_SHA256_HMAC,
-		.digest_len = 12,
+		.digest_len = 16,
 		.key_len = 32
 	}
 };
@@ -268,6 +268,8 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 	/* spi number */
 	APP_CHECK_TOKEN_IS_NUM(tokens, 1, status);
 	if (status->status < 0)
+		return;
+	if (atoi(tokens[1]) == INVALID_SPI)
 		return;
 	rule->spi = atoi(tokens[1]);
 
@@ -698,7 +700,22 @@ print_one_sa_rule(const struct ipsec_sa *sa, int inbound)
 		}
 		break;
 	case TRANSPORT:
-		printf("Transport");
+		printf("Transport ");
+		break;
+	}
+	printf(" type:");
+	switch (sa->type) {
+	case RTE_SECURITY_ACTION_TYPE_NONE:
+		printf("no-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO:
+		printf("inline-crypto-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL:
+		printf("inline-protocol-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL:
+		printf("lookaside-protocol-offload ");
 		break;
 	}
 	printf("\n");
@@ -725,8 +742,8 @@ sa_create(const char *name, int32_t socket_id)
 	snprintf(s, sizeof(s), "%s_%u", name, socket_id);
 
 	/* Create SA array table */
-	printf("Creating SA context with %u maximum entries\n",
-			IPSEC_SA_MAX_ENTRIES);
+	printf("Creating SA context with %u maximum entries on socket %d\n",
+			IPSEC_SA_MAX_ENTRIES, socket_id);
 
 	mz_size = sizeof(struct sa_ctx);
 	mz = rte_memzone_reserve(s, mz_size, socket_id,
@@ -805,7 +822,7 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 		}
 
 		if (sa->aead_algo == RTE_CRYPTO_AEAD_AES_GCM) {
-			iv_length = 16;
+			iv_length = 12;
 
 			sa_ctx->xf[idx].a.type = RTE_CRYPTO_SYM_XFORM_AEAD;
 			sa_ctx->xf[idx].a.aead.algo = sa->aead_algo;

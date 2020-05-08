@@ -36,7 +36,6 @@
 #include <rte_malloc.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_irq.h"
 #include "bnxt_ring.h"
 #include "hsi_struct_def_dpdk.h"
@@ -45,7 +44,7 @@
  * Interrupts
  */
 
-static void bnxt_int_handler(void *param)
+void bnxt_int_handler(void *param)
 {
 	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)param;
 	struct bnxt *bp = (struct bnxt *)eth_dev->data->dev_private;

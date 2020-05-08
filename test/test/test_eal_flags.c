@@ -45,7 +45,9 @@
 #include <sys/wait.h>
 #include <sys/file.h>
 #include <limits.h>
+#include <fcntl.h>
 
+#include <rte_per_lcore.h>
 #include <rte_debug.h>
 #include <rte_string_fns.h>
 
@@ -61,7 +63,7 @@
 #define memtest "memtest"
 #define memtest1 "memtest1"
 #define memtest2 "memtest2"
-#define SOCKET_MEM_STRLEN (RTE_MAX_NUMA_NODES * 10)
+#define SOCKET_MEM_STRLEN (RTE_MAX_NUMA_NODES * 20)
 #define launch_proc(ARGV) process_dup(ARGV, \
 		sizeof(ARGV)/(sizeof(ARGV[0])), __func__)
 
@@ -404,17 +406,17 @@ test_invalid_vdev_flag(void)
 #endif
 
 	/* Test with invalid vdev option */
-	const char *vdevinval[] = {prgname, prefix, "-n", "1",
+	const char *vdevinval[] = {prgname, prefix, no_huge, "-n", "1",
 				"-c", "1", vdev, "eth_dummy"};
 
 	/* Test with valid vdev option */
-	const char *vdevval1[] = {prgname, prefix, "-n", "1",
+	const char *vdevval1[] = {prgname, prefix, no_huge, "-n", "1",
 	"-c", "1", vdev, "net_ring0"};
 
-	const char *vdevval2[] = {prgname, prefix, "-n", "1",
+	const char *vdevval2[] = {prgname, prefix, no_huge, "-n", "1",
 	"-c", "1", vdev, "net_ring0,args=test"};
 
-	const char *vdevval3[] = {prgname, prefix, "-n", "1",
+	const char *vdevval3[] = {prgname, prefix, no_huge, "-n", "1",
 	"-c", "1", vdev, "net_ring0,nodeaction=r1:0:CREATE"};
 
 	if (launch_proc(vdevinval) == 0) {
@@ -529,40 +531,50 @@ test_missing_c_flag(void)
 				"-n", "3", "-l", "1," };
 	const char *argv10[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "-l", "1#2" };
+	/* core number is negative value */
+	const char * const argv11[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "-5" };
+	const char * const argv12[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "-5-7" };
+	/* core number is maximum value */
+	const char * const argv13[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", RTE_STR(RTE_MAX_LCORE) };
+	const char * const argv14[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "1-"RTE_STR(RTE_MAX_LCORE) };
 	/* sanity check test - valid corelist value */
-	const char *argv11[] = { prgname, prefix, mp_flag,
+	const char * const argv15[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "-l", "1-2,3" };
 
 	/* --lcores flag but no lcores value */
-	const char *argv12[] = { prgname, prefix, mp_flag,
+	const char * const argv16[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores" };
-	const char *argv13[] = { prgname, prefix, mp_flag,
+	const char * const argv17[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", " " };
 	/* bad lcores value */
-	const char *argv14[] = { prgname, prefix, mp_flag,
+	const char * const argv18[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "1-3-5" };
-	const char *argv15[] = { prgname, prefix, mp_flag,
+	const char * const argv19[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "0-1,,2" };
-	const char *argv16[] = { prgname, prefix, mp_flag,
+	const char * const argv20[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "0-,1" };
-	const char *argv17[] = { prgname, prefix, mp_flag,
+	const char * const argv21[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(0-,2-4)" };
-	const char *argv18[] = { prgname, prefix, mp_flag,
+	const char * const argv22[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(-1,2)" };
-	const char *argv19[] = { prgname, prefix, mp_flag,
+	const char * const argv23[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(2-4)@(2-4-6)" };
-	const char *argv20[] = { prgname, prefix, mp_flag,
+	const char * const argv24[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(a,2)" };
-	const char *argv21[] = { prgname, prefix, mp_flag,
+	const char * const argv25[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "1-3@(1,3)" };
-	const char *argv22[] = { prgname, prefix, mp_flag,
+	const char * const argv26[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "3@((1,3)" };
-	const char *argv23[] = { prgname, prefix, mp_flag,
+	const char * const argv27[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(4-7)=(1,3)" };
-	const char *argv24[] = { prgname, prefix, mp_flag,
+	const char * const argv28[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "[4-7]@(1,3)" };
 	/* sanity check of tests - valid lcores value */
-	const char *argv25[] = { prgname, prefix, mp_flag,
+	const char * const argv29[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores",
 				 "0-1,2@(5-7),(3-5)@(0,2),(0,6),7"};
 
@@ -590,31 +602,35 @@ test_missing_c_flag(void)
 			|| launch_proc(argv7) == 0
 			|| launch_proc(argv8) == 0
 			|| launch_proc(argv9) == 0
-			|| launch_proc(argv10) == 0) {
+			|| launch_proc(argv10) == 0
+			|| launch_proc(argv11) == 0
+			|| launch_proc(argv12) == 0
+			|| launch_proc(argv13) == 0
+			|| launch_proc(argv14) == 0) {
 		printf("Error - "
 		       "process ran without error with invalid -l flag\n");
 		return -1;
 	}
-	if (launch_proc(argv11) != 0) {
+	if (launch_proc(argv15) != 0) {
 		printf("Error - "
 		       "process did not run ok with valid corelist value\n");
 		return -1;
 	}
 
 	/* start --lcores tests */
-	if (launch_proc(argv12) == 0 || launch_proc(argv13) == 0 ||
-	    launch_proc(argv14) == 0 || launch_proc(argv15) == 0 ||
-	    launch_proc(argv16) == 0 || launch_proc(argv17) == 0 ||
+	if (launch_proc(argv16) == 0 || launch_proc(argv17) == 0 ||
 	    launch_proc(argv18) == 0 || launch_proc(argv19) == 0 ||
 	    launch_proc(argv20) == 0 || launch_proc(argv21) == 0 ||
-	    launch_proc(argv21) == 0 || launch_proc(argv22) == 0 ||
-	    launch_proc(argv23) == 0 || launch_proc(argv24) == 0) {
+	    launch_proc(argv22) == 0 || launch_proc(argv23) == 0 ||
+	    launch_proc(argv24) == 0 || launch_proc(argv25) == 0 ||
+	    launch_proc(argv26) == 0 || launch_proc(argv27) == 0 ||
+	    launch_proc(argv28) == 0) {
 		printf("Error - "
 		       "process ran without error with invalid --lcore flag\n");
 		return -1;
 	}
 
-	if (launch_proc(argv25) != 0) {
+	if (launch_proc(argv29) != 0) {
 		printf("Error - "
 		       "process did not run ok with valid corelist value\n");
 		return -1;
@@ -877,13 +893,10 @@ test_misc_flags(void)
 	const char *argv4[] = {prgname, prefix, mp_flag, "-c", "1", "--syslog"};
 	/* With invalid --syslog */
 	const char *argv5[] = {prgname, prefix, mp_flag, "-c", "1", "--syslog", "error"};
-	/* With no-sh-conf */
+	/* With no-sh-conf, also use no-huge to ensure this test runs on BSD */
 	const char *argv6[] = {prgname, "-c", "1", "-n", "2", "-m", DEFAULT_MEM_SIZE,
-			no_shconf, nosh_prefix };
+			no_shconf, nosh_prefix, no_huge};
 
-#ifdef RTE_EXEC_ENV_BSDAPP
-	return 0;
-#endif
 	/* With --huge-dir */
 	const char *argv7[] = {prgname, "-c", "1", "-n", "2", "-m", DEFAULT_MEM_SIZE,
 			"--file-prefix=hugedir", "--huge-dir", hugepath};
@@ -917,6 +930,7 @@ test_misc_flags(void)
 	const char *argv15[] = {prgname, "--file-prefix=intr",
 			"-c", "1", "-n", "2", "--vfio-intr=invalid"};
 
+	/* run all tests also applicable to FreeBSD first */
 
 	if (launch_proc(argv0) == 0) {
 		printf("Error - process ran ok with invalid flag\n");
@@ -930,6 +944,16 @@ test_misc_flags(void)
 		printf("Error - process did not run ok with -v flag\n");
 		return -1;
 	}
+	if (launch_proc(argv6) != 0) {
+		printf("Error - process did not run ok with --no-shconf flag\n");
+		return -1;
+	}
+
+#ifdef RTE_EXEC_ENV_BSDAPP
+	/* no more tests to be done on FreeBSD */
+	return 0;
+#endif
+
 	if (launch_proc(argv3) != 0) {
 		printf("Error - process did not run ok with --syslog flag\n");
 		return -1;
@@ -942,13 +966,6 @@ test_misc_flags(void)
 		printf("Error - process run ok with invalid --syslog flag\n");
 		return -1;
 	}
-	if (launch_proc(argv6) != 0) {
-		printf("Error - process did not run ok with --no-shconf flag\n");
-		return -1;
-	}
-#ifdef RTE_EXEC_ENV_BSDAPP
-	return 0;
-#endif
 	if (launch_proc(argv7) != 0) {
 		printf("Error - process did not run ok with --huge-dir flag\n");
 		return -1;
@@ -1166,10 +1183,11 @@ test_memory_flags(void)
 #ifdef RTE_EXEC_ENV_BSDAPP
 	int i, num_sockets = 1;
 #else
-	int i, num_sockets = get_number_of_sockets();
+	int i, num_sockets = RTE_MIN(get_number_of_sockets(),
+			RTE_MAX_NUMA_NODES);
 #endif
 
-	if (num_sockets <= 0 || num_sockets > RTE_MAX_NUMA_NODES) {
+	if (num_sockets <= 0) {
 		printf("Error - cannot get number of sockets!\n");
 		return -1;
 	}

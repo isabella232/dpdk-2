@@ -98,10 +98,12 @@ static struct rte_service_spec_impl *rte_services;
 static struct core_state *lcore_states;
 static uint32_t rte_service_library_initialized;
 
-int32_t rte_service_init(void)
+int32_t
+rte_service_init(void)
 {
 	if (rte_service_library_initialized) {
-		printf("service library init() called, init flag %d\n",
+		RTE_LOG(NOTICE, EAL,
+			"service library init() called, init flag %d\n",
 			rte_service_library_initialized);
 		return -EALREADY;
 	}
@@ -110,15 +112,15 @@ int32_t rte_service_init(void)
 			sizeof(struct rte_service_spec_impl),
 			RTE_CACHE_LINE_SIZE);
 	if (!rte_services) {
-		printf("error allocating rte services array\n");
-		return -ENOMEM;
+		RTE_LOG(ERR, EAL, "error allocating rte services array\n");
+		goto fail_mem;
 	}
 
 	lcore_states = rte_calloc("rte_service_core_states", RTE_MAX_LCORE,
 			sizeof(struct core_state), RTE_CACHE_LINE_SIZE);
 	if (!lcore_states) {
-		printf("error allocating core states array\n");
-		return -ENOMEM;
+		RTE_LOG(ERR, EAL, "error allocating core states array\n");
+		goto fail_mem;
 	}
 
 	int i;
@@ -135,6 +137,10 @@ int32_t rte_service_init(void)
 
 	rte_service_library_initialized = 1;
 	return 0;
+fail_mem:
+	rte_free(rte_services);
+	rte_free(lcore_states);
+	return -ENOMEM;
 }
 
 /* returns 1 if service is registered and has not been unregistered
@@ -378,8 +384,8 @@ service_run(uint32_t i, struct core_state *cs, uint64_t service_mask)
 	return 0;
 }
 
-int32_t rte_service_run_iter_on_app_lcore(uint32_t id,
-		uint32_t serialize_mt_unsafe)
+int32_t
+rte_service_run_iter_on_app_lcore(uint32_t id, uint32_t serialize_mt_unsafe)
 {
 	/* run service on calling core, using all-ones as the service mask */
 	if (!service_valid(id))
@@ -545,10 +551,14 @@ service_update(struct rte_service_spec *service, uint32_t lcore,
 
 	uint64_t sid_mask = UINT64_C(1) << sid;
 	if (set) {
-		if (*set) {
+		uint64_t lcore_mapped = lcore_states[lcore].service_mask &
+			sid_mask;
+
+		if (*set && !lcore_mapped) {
 			lcore_states[lcore].service_mask |= sid_mask;
 			rte_atomic32_inc(&rte_services[sid].num_mapped_cores);
-		} else {
+		}
+		if (!*set && lcore_mapped) {
 			lcore_states[lcore].service_mask &= ~(sid_mask);
 			rte_atomic32_dec(&rte_services[sid].num_mapped_cores);
 		}
@@ -583,23 +593,6 @@ rte_service_map_lcore_get(uint32_t id, uint32_t lcore)
 	return ret;
 }
 
-int32_t rte_service_lcore_reset_all(void)
-{
-	/* loop over cores, reset all to mask 0 */
-	uint32_t i;
-	for (i = 0; i < RTE_MAX_LCORE; i++) {
-		lcore_states[i].service_mask = 0;
-		lcore_states[i].is_service_core = 0;
-		lcore_states[i].runstate = RUNSTATE_STOPPED;
-	}
-	for (i = 0; i < RTE_SERVICE_NUM_MAX; i++)
-		rte_atomic32_set(&rte_services[i].num_mapped_cores, 0);
-
-	rte_smp_wmb();
-
-	return 0;
-}
-
 static void
 set_lcore_state(uint32_t lcore, int32_t state)
 {
@@ -612,6 +605,25 @@ set_lcore_state(uint32_t lcore, int32_t state)
 
 	/* update per-lcore optimized state tracking */
 	lcore_states[lcore].is_service_core = (state == ROLE_SERVICE);
+}
+
+int32_t rte_service_lcore_reset_all(void)
+{
+	/* loop over cores, reset all to mask 0 */
+	uint32_t i;
+	for (i = 0; i < RTE_MAX_LCORE; i++) {
+		if (lcore_states[i].is_service_core) {
+			lcore_states[i].service_mask = 0;
+			set_lcore_state(i, ROLE_RTE);
+			lcore_states[i].runstate = RUNSTATE_STOPPED;
+		}
+	}
+	for (i = 0; i < RTE_SERVICE_NUM_MAX; i++)
+		rte_atomic32_set(&rte_services[i].num_mapped_cores, 0);
+
+	rte_smp_wmb();
+
+	return 0;
 }
 
 int32_t

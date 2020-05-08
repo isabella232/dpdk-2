@@ -49,7 +49,7 @@ rte_security_session_create(struct rte_security_ctx *instance,
 
 	RTE_FUNC_PTR_OR_ERR_RET(*instance->ops->session_create, NULL);
 
-	if (rte_mempool_get(mp, (void *)&sess))
+	if (rte_mempool_get(mp, (void **)&sess))
 		return NULL;
 
 	if (instance->ops->session_create(instance->device, conf, sess, mp)) {
@@ -84,7 +84,6 @@ rte_security_session_destroy(struct rte_security_ctx *instance,
 			     struct rte_security_session *sess)
 {
 	int ret;
-	struct rte_mempool *mp = rte_mempool_from_obj(sess);
 
 	RTE_FUNC_PTR_OR_ERR_RET(*instance->ops->session_destroy, -ENOTSUP);
 
@@ -93,7 +92,7 @@ rte_security_session_destroy(struct rte_security_ctx *instance,
 
 	ret = instance->ops->session_destroy(instance->device, sess);
 	if (!ret)
-		rte_mempool_put(mp, (void *)sess);
+		rte_mempool_put(rte_mempool_from_obj(sess), (void *)sess);
 
 	return ret;
 }

@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <stdbool.h>
 
 #include <rte_cycles.h>
 #include <rte_memory.h>
@@ -59,6 +60,7 @@
 #include "virtio_pci.h"
 #include "virtqueue.h"
 #include "virtio_rxtx.h"
+#include "virtio_rxtx_simple.h"
 
 #ifdef RTE_LIBRTE_VIRTIO_DEBUG_DUMP
 #define VIRTIO_DUMP_PACKET(m, len) rte_pktmbuf_dump(stdout, m, len)
@@ -281,9 +283,10 @@ virtqueue_enqueue_xmit(struct virtnet_tx *txvq, struct rte_mbuf *cookie,
 	struct vring_desc *start_dp;
 	uint16_t seg_num = cookie->nb_segs;
 	uint16_t head_idx, idx;
-	uint16_t head_size = vq->hw->vtnet_hdr_size;
+	int16_t head_size = vq->hw->vtnet_hdr_size;
 	struct virtio_net_hdr *hdr;
 	int offload;
+	bool prepend_header = false;
 
 	offload = tx_offload_enabled(vq->hw);
 	head_idx = vq->vq_desc_head_idx;
@@ -296,12 +299,9 @@ virtqueue_enqueue_xmit(struct virtnet_tx *txvq, struct rte_mbuf *cookie,
 
 	if (can_push) {
 		/* prepend cannot fail, checked by caller */
-		hdr = (struct virtio_net_hdr *)
-			rte_pktmbuf_prepend(cookie, head_size);
-		/* rte_pktmbuf_prepend() counts the hdr size to the pkt length,
-		 * which is wrong. Below subtract restores correct pkt size.
-		 */
-		cookie->pkt_len -= head_size;
+		hdr = rte_pktmbuf_mtod_offset(cookie, struct virtio_net_hdr *,
+									  -head_size);
+		prepend_header = true;
 		/* if offload disabled, it is not zeroed below, do it now */
 		if (offload == 0) {
 			ASSIGN_UNLESS_EQUAL(hdr->csum_start, 0);
@@ -387,6 +387,11 @@ virtqueue_enqueue_xmit(struct virtnet_tx *txvq, struct rte_mbuf *cookie,
 	do {
 		start_dp[idx].addr  = VIRTIO_MBUF_DATA_DMA_ADDR(cookie, vq);
 		start_dp[idx].len   = cookie->data_len;
+		if (prepend_header) {
+			start_dp[idx].addr -= head_size;
+			start_dp[idx].len += head_size;
+			prepend_header = false;
+		}
 		start_dp[idx].flags = cookie->next ? VRING_DESC_F_NEXT : 0;
 		idx = start_dp[idx].next;
 	} while ((cookie = cookie->next) != NULL);
@@ -416,7 +421,7 @@ virtio_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			uint16_t queue_idx,
 			uint16_t nb_desc,
 			unsigned int socket_id __rte_unused,
-			__rte_unused const struct rte_eth_rxconf *rx_conf,
+			const struct rte_eth_rxconf *rx_conf,
 			struct rte_mempool *mp)
 {
 	uint16_t vtpci_queue_idx = 2 * queue_idx + VTNET_SQ_RQ_QUEUE_IDX;
@@ -425,6 +430,11 @@ virtio_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	struct virtnet_rx *rxvq;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (rx_conf->rx_deferred_start) {
+		PMD_INIT_LOG(ERR, "Rx deferred start is not supported");
+		return -EINVAL;
+	}
 
 	if (nb_desc == 0 || nb_desc > vq->vq_nentries)
 		nb_desc = vq->vq_nentries;
@@ -465,6 +475,8 @@ virtio_dev_rx_queue_setup_finish(struct rte_eth_dev *dev, uint16_t queue_idx)
 			vq->vq_ring.desc[desc_idx].flags =
 				VRING_DESC_F_WRITE;
 		}
+
+		virtio_rxq_vec_setup(rxvq);
 	}
 
 	memset(&rxvq->fake_mbuf, 0, sizeof(rxvq->fake_mbuf));
@@ -474,29 +486,30 @@ virtio_dev_rx_queue_setup_finish(struct rte_eth_dev *dev, uint16_t queue_idx)
 			&rxvq->fake_mbuf;
 	}
 
-	while (!virtqueue_full(vq)) {
-		m = rte_mbuf_raw_alloc(rxvq->mpool);
-		if (m == NULL)
-			break;
-
-		/* Enqueue allocated buffers */
-		if (hw->use_simple_rx)
-			error = virtqueue_enqueue_recv_refill_simple(vq, m);
-		else
-			error = virtqueue_enqueue_recv_refill(vq, m);
-
-		if (error) {
-			rte_pktmbuf_free(m);
-			break;
+	if (hw->use_simple_rx) {
+		while (vq->vq_free_cnt >= RTE_VIRTIO_VPMD_RX_REARM_THRESH) {
+			virtio_rxq_rearm_vec(rxvq);
+			nbufs += RTE_VIRTIO_VPMD_RX_REARM_THRESH;
 		}
-		nbufs++;
+	} else {
+		while (!virtqueue_full(vq)) {
+			m = rte_mbuf_raw_alloc(rxvq->mpool);
+			if (m == NULL)
+				break;
+
+			/* Enqueue allocated buffers */
+			error = virtqueue_enqueue_recv_refill(vq, m);
+			if (error) {
+				rte_pktmbuf_free(m);
+				break;
+			}
+			nbufs++;
+		}
+
+		vq_update_avail_idx(vq);
 	}
 
-	vq_update_avail_idx(vq);
-
 	PMD_INIT_LOG(DEBUG, "Allocated %d bufs", nbufs);
-
-	virtio_rxq_vec_setup(rxvq);
 
 	VIRTQUEUE_DUMP(vq);
 
@@ -524,6 +537,11 @@ virtio_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	uint16_t tx_free_thresh;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (tx_conf->tx_deferred_start) {
+		PMD_INIT_LOG(ERR, "Tx deferred start is not supported");
+		return -EINVAL;
+	}
 
 	/* cannot use simple rxtx funcs with multisegs or offloads */
 	if ((tx_conf->txq_flags & VIRTIO_SIMPLE_FLAGS) != VIRTIO_SIMPLE_FLAGS)
@@ -628,7 +646,7 @@ virtio_update_packet_stats(struct virtnet_stats *stats, struct rte_mbuf *mbuf)
 			stats->size_bins[0]++;
 		else if (s < 1519)
 			stats->size_bins[6]++;
-		else if (s >= 1519)
+		else
 			stats->size_bins[7]++;
 	}
 
@@ -1040,6 +1058,8 @@ virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				rte_pktmbuf_free(txm);
 				continue;
 			}
+			/* vlan_insert may add a header mbuf */
+			tx_pkts[nb_tx] = txm;
 		}
 
 		/* optimize ring usage */

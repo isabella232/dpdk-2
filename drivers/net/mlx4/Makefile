@@ -73,7 +73,11 @@ endif
 
 # User-defined CFLAGS.
 ifeq ($(CONFIG_RTE_LIBRTE_MLX4_DEBUG),y)
-CFLAGS += -pedantic -UNDEBUG -DPEDANTIC
+CFLAGS += -pedantic -UNDEBUG
+ifneq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
+CFLAGS += -DPEDANTIC
+endif
+AUTO_CONFIG_CFLAGS += -Wno-pedantic
 else
 CFLAGS += -DNDEBUG -UPEDANTIC
 endif
@@ -82,16 +86,12 @@ ifdef CONFIG_RTE_LIBRTE_MLX4_TX_MP_CACHE
 CFLAGS += -DMLX4_PMD_TX_MP_CACHE=$(CONFIG_RTE_LIBRTE_MLX4_TX_MP_CACHE)
 endif
 
-ifeq ($(CONFIG_RTE_LIBRTE_MLX4_DEBUG_BROKEN_VERBS),y)
-CFLAGS += -DMLX4_PMD_DEBUG_BROKEN_VERBS
-endif
-
 include $(RTE_SDK)/mk/rte.lib.mk
 
 # Generate and clean-up mlx4_autoconf.h.
 
 export CC CFLAGS CPPFLAGS EXTRA_CFLAGS EXTRA_CPPFLAGS
-export AUTO_CONFIG_CFLAGS = -Wno-error
+export AUTO_CONFIG_CFLAGS += -Wno-error
 
 ifndef V
 AUTOCONF_OUTPUT := >/dev/null

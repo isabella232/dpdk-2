@@ -172,6 +172,8 @@ static const struct ena_stats ena_stats_ena_com_strings[] = {
 
 #define	ENA_TX_OFFLOAD_MASK	(\
 	PKT_TX_L4_MASK |         \
+	PKT_TX_IPV6 |            \
+	PKT_TX_IPV4 |            \
 	PKT_TX_IP_CKSUM |        \
 	PKT_TX_TCP_SEG)
 
@@ -260,16 +262,17 @@ static inline void ena_rx_mbuf_prepare(struct rte_mbuf *mbuf,
 				       struct ena_com_rx_ctx *ena_rx_ctx)
 {
 	uint64_t ol_flags = 0;
+	uint32_t packet_type = 0;
 
 	if (ena_rx_ctx->l4_proto == ENA_ETH_IO_L4_PROTO_TCP)
-		ol_flags |= PKT_TX_TCP_CKSUM;
+		packet_type |= RTE_PTYPE_L4_TCP;
 	else if (ena_rx_ctx->l4_proto == ENA_ETH_IO_L4_PROTO_UDP)
-		ol_flags |= PKT_TX_UDP_CKSUM;
+		packet_type |= RTE_PTYPE_L4_UDP;
 
 	if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV4)
-		ol_flags |= PKT_TX_IPV4;
+		packet_type |= RTE_PTYPE_L3_IPV4;
 	else if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV6)
-		ol_flags |= PKT_TX_IPV6;
+		packet_type |= RTE_PTYPE_L3_IPV6;
 
 	if (unlikely(ena_rx_ctx->l4_csum_err))
 		ol_flags |= PKT_RX_L4_CKSUM_BAD;
@@ -277,6 +280,7 @@ static inline void ena_rx_mbuf_prepare(struct rte_mbuf *mbuf,
 		ol_flags |= PKT_RX_IP_CKSUM_BAD;
 
 	mbuf->ol_flags = ol_flags;
+	mbuf->packet_type = packet_type;
 }
 
 static inline void ena_tx_mbuf_prepare(struct rte_mbuf *mbuf,
@@ -707,7 +711,7 @@ static int ena_link_update(struct rte_eth_dev *dev,
 	struct rte_eth_link *link = &dev->data->dev_link;
 
 	link->link_status = 1;
-	link->link_speed = ETH_SPEED_NUM_10G;
+	link->link_speed = ETH_SPEED_NUM_NONE;
 	link->link_duplex = ETH_LINK_FULL_DUPLEX;
 
 	return 0;
@@ -905,7 +909,7 @@ static int ena_start(struct rte_eth_dev *dev)
 		return rc;
 
 	if (adapter->rte_dev->data->dev_conf.rxmode.mq_mode &
-	    ETH_MQ_RX_RSS_FLAG) {
+	    ETH_MQ_RX_RSS_FLAG && adapter->rte_dev->data->nb_rx_queues > 0) {
 		rc = ena_rss_init_default(adapter);
 		if (rc)
 			return rc;
@@ -1276,18 +1280,19 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 
 	static int adapters_found;
 
-	memset(adapter, 0, sizeof(struct ena_adapter));
-	ena_dev = &adapter->ena_dev;
-
 	eth_dev->dev_ops = &ena_dev_ops;
 	eth_dev->rx_pkt_burst = &eth_ena_recv_pkts;
 	eth_dev->tx_pkt_burst = &eth_ena_xmit_pkts;
 	eth_dev->tx_pkt_prepare = &eth_ena_prep_pkts;
-	adapter->rte_eth_dev_data = eth_dev->data;
-	adapter->rte_dev = eth_dev;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
+
+	memset(adapter, 0, sizeof(struct ena_adapter));
+	ena_dev = &adapter->ena_dev;
+
+	adapter->rte_eth_dev_data = eth_dev->data;
+	adapter->rte_dev = eth_dev;
 
 	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	adapter->pdev = pci_dev;
@@ -1491,6 +1496,9 @@ static void ena_infos_get(struct rte_eth_dev *dev,
 	dev_info->rx_offload_capa = rx_feat;
 	dev_info->tx_offload_capa = tx_feat;
 
+	dev_info->flow_type_rss_offloads = ETH_RSS_IP | ETH_RSS_TCP |
+					   ETH_RSS_UDP;
+
 	dev_info->min_rx_bufsize = ENA_MIN_FRAME_LEN;
 	dev_info->max_rx_pktlen  = adapter->max_mtu;
 	dev_info->max_mac_addrs = 1;
@@ -1571,7 +1579,7 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 		/* fill mbuf attributes if any */
 		ena_rx_mbuf_prepare(mbuf_head, &ena_rx_ctx);
-		mbuf_head->hash.rss = (uint32_t)rx_ring->id;
+		mbuf_head->hash.rss = ena_rx_ctx.hash;
 
 		/* pass to DPDK application head mbuf */
 		rx_pkts[recv_idx] = mbuf_head;
@@ -1582,8 +1590,10 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 	desc_in_use = desc_in_use - completed + 1;
 	/* Burst refill to save doorbells, memory barriers, const interval */
-	if (ring_size - desc_in_use > ENA_RING_DESCS_RATIO(ring_size))
+	if (ring_size - desc_in_use > ENA_RING_DESCS_RATIO(ring_size)) {
+		ena_com_update_dev_comp_head(rx_ring->ena_com_io_cq);
 		ena_populate_rx_queue(rx_ring, ring_size - desc_in_use);
+	}
 
 	return recv_idx;
 }
@@ -1630,14 +1640,14 @@ eth_ena_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		if ((ol_flags & ENA_TX_OFFLOAD_NOTSUP_MASK) != 0 ||
 				(ol_flags & PKT_TX_L4_MASK) ==
 				PKT_TX_SCTP_CKSUM) {
-			rte_errno = -ENOTSUP;
+			rte_errno = ENOTSUP;
 			return i;
 		}
 
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 #endif
@@ -1650,7 +1660,7 @@ eth_ena_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		ret = rte_net_intel_cksum_flags_prepare(m,
 			ol_flags & ~PKT_TX_TCP_SEG);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 	}
@@ -1785,8 +1795,9 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	if (total_tx_descs > 0) {
 		/* acknowledge completion of sent packets */
-		ena_com_comp_ack(tx_ring->ena_com_io_sq, total_tx_descs);
 		tx_ring->next_to_clean = next_to_clean;
+		ena_com_comp_ack(tx_ring->ena_com_io_sq, total_tx_descs);
+		ena_com_update_dev_comp_head(tx_ring->ena_com_io_cq);
 	}
 
 	return sent_idx;

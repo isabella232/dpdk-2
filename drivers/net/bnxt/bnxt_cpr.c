@@ -34,7 +34,6 @@
 #include <rte_malloc.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
 #include "hsi_struct_def_dpdk.h"
@@ -49,13 +48,11 @@ void bnxt_handle_async_event(struct bnxt *bp,
 				(struct hwrm_async_event_cmpl *)cmp;
 	uint16_t event_id = rte_le_to_cpu_16(async_cmp->event_id);
 
-	/* TODO: HWRM async events are not defined yet */
-	/* Needs to handle: link events, error events, etc. */
 	switch (event_id) {
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_STATUS_CHANGE:
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_SPEED_CHANGE:
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_SPEED_CFG_CHANGE:
-		bnxt_link_update_op(bp->eth_dev, 1);
+		bnxt_link_update_op(bp->eth_dev, 0);
 		break;
 	default:
 		RTE_LOG(DEBUG, PMD, "handle_async_event id = 0x%x\n", event_id);
@@ -165,7 +162,6 @@ int bnxt_alloc_def_cp_ring(struct bnxt *bp)
 		goto err_out;
 	cpr->cp_doorbell = bp->pdev->mem_resource[2].addr;
 	B_CP_DIS_DB(cpr, cpr->cp_raw_cons);
-	bp->grp_info[0].cp_fw_ring_id = cp_ring->fw_ring_id;
 	if (BNXT_PF(bp))
 		rc = bnxt_hwrm_func_cfg_def_cp(bp);
 	else

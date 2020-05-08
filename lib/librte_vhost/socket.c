@@ -110,22 +110,29 @@ static struct vhost_user vhost_user = {
 	.fdset = {
 		.fd = { [0 ... MAX_FDS - 1] = {-1, NULL, NULL, NULL, 0} },
 		.fd_mutex = PTHREAD_MUTEX_INITIALIZER,
+		.fd_pooling_mutex = PTHREAD_MUTEX_INITIALIZER,
 		.num = 0
 	},
 	.vsocket_cnt = 0,
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
 };
 
-/* return bytes# of read on success or negative val on failure. */
+/*
+ * return bytes# of read on success or negative val on failure. Update fdnum
+ * with number of fds read.
+ */
 int
-read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
+read_fd_message(int sockfd, char *buf, int buflen, int *fds, int max_fds,
+		int *fd_num)
 {
 	struct iovec iov;
 	struct msghdr msgh;
-	size_t fdsize = fd_num * sizeof(int);
-	char control[CMSG_SPACE(fdsize)];
+	char control[CMSG_SPACE(max_fds * sizeof(int))];
 	struct cmsghdr *cmsg;
+	int got_fds = 0;
 	int ret;
+
+	*fd_num = 0;
 
 	memset(&msgh, 0, sizeof(msgh));
 	iov.iov_base = buf;
@@ -143,7 +150,7 @@ read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
 	}
 
 	if (msgh.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
-		RTE_LOG(ERR, VHOST_CONFIG, "truncted msg\n");
+		RTE_LOG(ERR, VHOST_CONFIG, "truncated msg\n");
 		return -1;
 	}
 
@@ -151,10 +158,16 @@ read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
 		cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
 		if ((cmsg->cmsg_level == SOL_SOCKET) &&
 			(cmsg->cmsg_type == SCM_RIGHTS)) {
-			memcpy(fds, CMSG_DATA(cmsg), fdsize);
+			got_fds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+			*fd_num = got_fds;
+			memcpy(fds, CMSG_DATA(cmsg), got_fds * sizeof(int));
 			break;
 		}
 	}
+
+	/* Clear out unused file descriptors */
+	while (got_fds < max_fds)
+		fds[got_fds++] = -1;
 
 	return ret;
 }
@@ -181,6 +194,11 @@ send_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
 		msgh.msg_control = control;
 		msgh.msg_controllen = sizeof(control);
 		cmsg = CMSG_FIRSTHDR(&msgh);
+		if (cmsg == NULL) {
+			RTE_LOG(ERR, VHOST_CONFIG, "cmsg == NULL\n");
+			errno = EINVAL;
+			return -1;
+		}
 		cmsg->cmsg_len = CMSG_LEN(fdsize);
 		cmsg->cmsg_level = SOL_SOCKET;
 		cmsg->cmsg_type = SCM_RIGHTS;
@@ -235,7 +253,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"failed to add vhost user connection with fd %d\n",
 				fd);
-			goto err;
+			goto err_cleanup;
 		}
 	}
 
@@ -252,7 +270,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 		if (vsocket->notify_ops->destroy_connection)
 			vsocket->notify_ops->destroy_connection(conn->vid);
 
-		goto err;
+		goto err_cleanup;
 	}
 
 	pthread_mutex_lock(&vsocket->conn_mutex);
@@ -260,6 +278,8 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	pthread_mutex_unlock(&vsocket->conn_mutex);
 	return;
 
+err_cleanup:
+	vhost_destroy_device(vid);
 err:
 	free(conn);
 	close(fd);
@@ -472,7 +492,7 @@ vhost_user_reconnect_init(void)
 
 	ret = pthread_create(&reconn_tid, NULL,
 			     vhost_user_client_reconnect, NULL);
-	if (ret < 0) {
+	if (ret != 0) {
 		RTE_LOG(ERR, VHOST_CONFIG, "failed to create reconnect thread");
 		if (pthread_mutex_destroy(&reconn_list.mutex)) {
 			RTE_LOG(ERR, VHOST_CONFIG,
@@ -655,6 +675,14 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	}
 	vsocket->dequeue_zero_copy = flags & RTE_VHOST_USER_DEQUEUE_ZERO_COPY;
 
+	if (vsocket->dequeue_zero_copy &&
+	    (flags & RTE_VHOST_USER_IOMMU_SUPPORT)) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"error: enabling dequeue zero copy and IOMMU features "
+			"simultaneously is not supported\n");
+		goto out_mutex;
+	}
+
 	/*
 	 * Set the supported features correctly for the builtin vhost-user
 	 * net driver.
@@ -678,9 +706,8 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	if ((flags & RTE_VHOST_USER_CLIENT) != 0) {
 		vsocket->reconnect = !(flags & RTE_VHOST_USER_NO_RECONNECT);
 		if (vsocket->reconnect && reconn_tid == 0) {
-			if (vhost_user_reconnect_init() < 0) {
+			if (vhost_user_reconnect_init() != 0)
 				goto out_mutex;
-			}
 		}
 	} else {
 		vsocket->is_server = true;
@@ -757,13 +784,25 @@ rte_vhost_driver_unregister(const char *path)
 				vhost_user_remove_reconnect(vsocket);
 			}
 
+again:
 			pthread_mutex_lock(&vsocket->conn_mutex);
 			for (conn = TAILQ_FIRST(&vsocket->conn_list);
 			     conn != NULL;
 			     conn = next) {
 				next = TAILQ_NEXT(conn, next);
 
-				fdset_del(&vhost_user.fdset, conn->connfd);
+				/*
+				 * If r/wcb is executing, release the
+				 * conn_mutex lock, and try again since
+				 * the r/wcb may use the conn_mutex lock.
+				 */
+				if (fdset_try_del(&vhost_user.fdset,
+						  conn->connfd) == -1) {
+					pthread_mutex_unlock(
+							&vsocket->conn_mutex);
+					goto again;
+				}
+
 				RTE_LOG(INFO, VHOST_CONFIG,
 					"free connfd = %d for device '%s'\n",
 					conn->connfd, path);
@@ -837,7 +876,7 @@ rte_vhost_driver_start(const char *path)
 	if (fdset_tid == 0) {
 		int ret = pthread_create(&fdset_tid, NULL, fdset_event_dispatch,
 				     &vhost_user.fdset);
-		if (ret < 0)
+		if (ret != 0)
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"failed to create fdset handling thread");
 	}

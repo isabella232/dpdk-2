@@ -121,7 +121,7 @@ dpaa_mem_vtop(void *vaddr)
 	for (i = 0; i < RTE_MAX_MEMSEG && memseg[i].addr_64 != 0; i++) {
 		if (vaddr_64 >= memseg[i].addr_64 &&
 		    vaddr_64 < memseg[i].addr_64 + memseg[i].len) {
-			paddr = memseg[i].phys_addr +
+			paddr = memseg[i].iova +
 				(vaddr_64 - memseg[i].addr_64);
 
 			return (rte_iova_t)paddr;
@@ -137,10 +137,10 @@ dpaa_mem_ptov(rte_iova_t paddr)
 	int i;
 
 	for (i = 0; i < RTE_MAX_MEMSEG && memseg[i].addr_64 != 0; i++) {
-		if (paddr >= memseg[i].phys_addr &&
-		    (char *)paddr < (char *)memseg[i].phys_addr + memseg[i].len)
+		if (paddr >= memseg[i].iova &&
+		    (char *)paddr < (char *)memseg[i].iova + memseg[i].len)
 			return (void *)(memseg[i].addr_64 +
-					(paddr - memseg[i].phys_addr));
+					(paddr - memseg[i].iova));
 	}
 	return NULL;
 }
@@ -1460,7 +1460,8 @@ cryptodev_dpaa_sec_probe(struct rte_dpaa_driver *dpaa_drv,
 
 	int retval;
 
-	sprintf(cryptodev_name, "dpaa_sec-%d", dpaa_dev->id.dev_id);
+	snprintf(cryptodev_name, sizeof(cryptodev_name), "dpaa_sec-%d",
+			dpaa_dev->id.dev_id);
 
 	cryptodev = rte_cryptodev_pmd_allocate(cryptodev_name, rte_socket_id());
 	if (cryptodev == NULL)

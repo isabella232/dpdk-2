@@ -87,6 +87,10 @@
 		PKT_TX_OUTER_IP_CKSUM)
 
 #define I40E_TX_OFFLOAD_MASK (  \
+		PKT_TX_OUTER_IPV4 |	\
+		PKT_TX_OUTER_IPV6 |	\
+		PKT_TX_IPV4 |		\
+		PKT_TX_IPV6 |		\
 		PKT_TX_IP_CKSUM |       \
 		PKT_TX_L4_MASK |        \
 		PKT_TX_OUTER_IP_CKSUM | \
@@ -2305,12 +2309,12 @@ i40e_tx_queue_release_mbufs(struct i40e_tx_queue *txq)
 	struct rte_eth_dev *dev;
 	uint16_t i;
 
-	dev = &rte_eth_devices[txq->port_id];
-
 	if (!txq || !txq->sw_ring) {
-		PMD_DRV_LOG(DEBUG, "Pointer to rxq or sw_ring is NULL");
+		PMD_DRV_LOG(DEBUG, "Pointer to txq or sw_ring is NULL");
 		return;
 	}
+
+	dev = &rte_eth_devices[txq->port_id];
 
 	/**
 	 *  vPMD tx will not set sw_ring's mbuf to NULL after free,
@@ -2634,7 +2638,6 @@ i40e_dev_free_queues(struct rte_eth_dev *dev)
 		i40e_dev_rx_queue_release(dev->data->rx_queues[i]);
 		dev->data->rx_queues[i] = NULL;
 	}
-	dev->data->nb_rx_queues = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		if (!dev->data->tx_queues[i])
@@ -2642,7 +2645,6 @@ i40e_dev_free_queues(struct rte_eth_dev *dev)
 		i40e_dev_tx_queue_release(dev->data->tx_queues[i]);
 		dev->data->tx_queues[i] = NULL;
 	}
-	dev->data->nb_tx_queues = 0;
 }
 
 #define I40E_FDIR_NUM_TX_DESC  I40E_MIN_RING_DESC
@@ -2749,6 +2751,7 @@ i40e_fdir_setup_rx_resources(struct i40e_pf *pf)
 	rxq->vsi = pf->fdir.fdir_vsi;
 
 	rxq->rx_ring_phys_addr = rz->iova;
+	memset(rz->addr, 0, I40E_FDIR_NUM_RX_DESC * sizeof(union i40e_rx_desc));
 	rxq->rx_ring = (union i40e_rx_desc *)rz->addr;
 
 	/*

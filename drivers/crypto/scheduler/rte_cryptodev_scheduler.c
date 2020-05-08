@@ -119,8 +119,10 @@ update_scheduler_capability(struct scheduler_ctx *sched_ctx)
 	struct rte_cryptodev_capabilities tmp_caps[256] = { {0} };
 	uint32_t nb_caps = 0, i;
 
-	if (sched_ctx->capabilities)
+	if (sched_ctx->capabilities) {
 		rte_free(sched_ctx->capabilities);
+		sched_ctx->capabilities = NULL;
+	}
 
 	for (i = 0; i < sched_ctx->nb_slaves; i++) {
 		struct rte_cryptodev_info dev_info;
@@ -467,8 +469,8 @@ rte_cryptodev_scheduler_load_user_scheduler(uint8_t scheduler_id,
 				RTE_CRYPTODEV_NAME_MAX_LEN);
 		return -EINVAL;
 	}
-	strncpy(sched_ctx->name, scheduler->name,
-			RTE_CRYPTODEV_SCHEDULER_NAME_MAX_LEN);
+	snprintf(sched_ctx->name, sizeof(sched_ctx->name), "%s",
+			scheduler->name);
 
 	if (strlen(scheduler->description) >
 			RTE_CRYPTODEV_SCHEDULER_DESC_MAX_LEN - 1) {
@@ -477,8 +479,8 @@ rte_cryptodev_scheduler_load_user_scheduler(uint8_t scheduler_id,
 				RTE_CRYPTODEV_SCHEDULER_DESC_MAX_LEN - 1);
 		return -EINVAL;
 	}
-	strncpy(sched_ctx->description, scheduler->description,
-			RTE_CRYPTODEV_SCHEDULER_DESC_MAX_LEN);
+	snprintf(sched_ctx->description, sizeof(sched_ctx->description), "%s",
+			scheduler->description);
 
 	/* load scheduler instance operations functions */
 	sched_ctx->ops.config_queue_pair = scheduler->ops->config_queue_pair;
@@ -490,8 +492,10 @@ rte_cryptodev_scheduler_load_user_scheduler(uint8_t scheduler_id,
 	sched_ctx->ops.option_set = scheduler->ops->option_set;
 	sched_ctx->ops.option_get = scheduler->ops->option_get;
 
-	if (sched_ctx->private_ctx)
+	if (sched_ctx->private_ctx) {
 		rte_free(sched_ctx->private_ctx);
+		sched_ctx->private_ctx = NULL;
+	}
 
 	if (sched_ctx->ops.create_private_ctx) {
 		int ret = (*sched_ctx->ops.create_private_ctx)(dev);

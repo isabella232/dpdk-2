@@ -60,7 +60,7 @@ If you type a partial command and hit ``<TAB>`` you get a list of the available 
 
 .. note::
 
-   Some examples in this document are too long to fit on one line are are shown wrapped at `"\\"` for display purposes::
+   Some examples in this document are too long to fit on one line are shown wrapped at `"\\"` for display purposes::
 
       testpmd> set flow_ctrl rx (on|off) tx (on|off) (high_water) (low_water) \
                (pause_time) (send_xon) (port_id)
@@ -329,7 +329,7 @@ The available information categories are:
 * ``mac``: Changes the source and the destination Ethernet addresses of packets before forwarding them.
   Default application behaviour is to set source Ethernet address to that of the transmitting interface, and destination
   address to a dummy value (set during init). The user may specify a target destination Ethernet address via the 'eth-peer' or
-  'eth-peer-configfile' command-line options. It is not currently possible to specify a specific source Ethernet address.
+  'eth-peers-configfile' command-line options. It is not currently possible to specify a specific source Ethernet address.
 
 * ``macswap``: MAC swap forwarding mode.
   Swaps the source and the destination Ethernet addresses of packets before forwarding them.
@@ -422,6 +422,56 @@ List all items from the pctype mapping table::
 
    testpmd> show port (port_id) pctype mapping
 
+
+dump physmem
+~~~~~~~~~~~~
+
+Dumps all physical memory segment layouts::
+
+   testpmd> dump_physmem
+
+dump memzone
+~~~~~~~~~~~~
+
+Dumps the layout of all memory zones::
+
+   testpmd> dump_memzone
+
+
+dump struct size
+~~~~~~~~~~~~~~~~
+
+Dumps the size of all memory structures::
+
+   testpmd> dump_struct_sizes
+
+dump ring
+~~~~~~~~~
+
+Dumps the status of all or specific element in DPDK rings::
+
+   testpmd> dump_ring [ring_name]
+
+dump mempool
+~~~~~~~~~~~~
+
+Dumps the statistics of all or specific memory pool::
+
+   testpmd> dump_mempool [mempool_name]
+
+dump devargs
+~~~~~~~~~~~~
+
+Dumps the user device list::
+
+   testpmd> dump_devargs
+
+dump log types
+~~~~~~~~~~~~~~
+
+Dumps the log level for all the dpdk modules::
+
+   testpmd> dump_log_types
 
 Configuration Functions
 -----------------------
@@ -886,7 +936,7 @@ where:
 
 * "on"is just an enable function which server for other configuration,
   it is for all configuration about queue region from up layer,
-  at first will only keep in DPDK softwarestored in driver,
+  at first will only keep in DPDK software stored in driver,
   only after "flush on", it commit all configuration to HW.
   "off" is just clean all configuration about queue region just now,
   and restore all to DPDK i40e driver default config when start up.
@@ -955,6 +1005,20 @@ tso show
 Display the status of TCP Segmentation Offload::
 
    testpmd> tso show (port_id)
+
+tunnel tso set
+~~~~~~~~~~~~~~
+
+Set tso segment size of tunneled packets for a port in csum engine::
+
+   testpmd> tunnel_tso set (tso_segsz) (port_id)
+
+tunnel tso show
+~~~~~~~~~~~~~~~
+
+Display the status of tunneled TCP Segmentation Offload for a port::
+
+   testpmd> tunnel_tso show (port_id)
 
 set port - gro
 ~~~~~~~~~~~~~~
@@ -1069,6 +1133,22 @@ mac_addr remove
 Remove a MAC address from a port::
 
    testpmd> mac_addr remove (port_id) (XX:XX:XX:XX:XX:XX)
+
+mcast_addr add
+~~~~~~~~~~~~~~
+
+To add the multicast MAC address to/from the set of multicast addresses
+filtered by port::
+
+   testpmd> mcast_addr add (port_id) (mcast_addr)
+
+mcast_addr remove
+~~~~~~~~~~~~~~~~~
+
+To remove the multicast MAC address to/from the set of multicast addresses
+filtered by port::
+
+   testpmd> mcast_addr remove (port_id) (mcast_addr)
 
 mac_addr add (for VF)
 ~~~~~~~~~~~~~~~~~~~~~
@@ -1624,6 +1704,15 @@ Close all ports or a specific port::
 
    testpmd> port close (port_id|all)
 
+port reset
+~~~~~~~~~~
+
+Reset all ports or a specific port::
+
+   testpmd> port reset (port_id|all)
+
+User should stop port(s) before resetting and (re-)start after reset.
+
 port start/stop queue
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -1850,6 +1939,26 @@ where:
 * ``flow_type_id``: software flow type id as the index of the pctype mapping table.
 
 
+port config mtu
+~~~~~~~~~~~~~~~
+
+To configure MTU(Maximum Transmission Unit) on devices using testpmd::
+
+   testpmd> port config mtu (port_id) (value)
+
+port config rss hash key
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+To configure the RSS hash key used to compute the RSS
+hash of input [IP] packets received on port::
+
+   testpmd> port config <port_id> rss-hash-key (ipv4|ipv4-frag|\
+                     ipv4-tcp|ipv4-udp|ipv4-sctp|ipv4-other|\
+                     ipv6|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp|\
+                     ipv6-other|l2-payload|ipv6-ex|ipv6-tcp-ex|\
+                     ipv6-udp-ex <string of hex digits \
+                     (variable length, NIC dependent)>)
+
 Link Bonding Functions
 ----------------------
 
@@ -1865,7 +1974,7 @@ Create a new bonding device::
 
 For example, to create a bonded device in mode 1 on socket 0::
 
-   testpmd> create bonded 1 0
+   testpmd> create bonded device 1 0
    created new bonded device (port X)
 
 add bonding slave
@@ -2073,7 +2182,7 @@ Traffic Management
 ------------------
 
 The following section shows functions for configuring traffic management on
-on the ethernet device through the use of generic TM API.
+the ethernet device through the use of generic TM API.
 
 show port traffic management capability
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2122,13 +2231,16 @@ Add port traffic management private shaper profile
 Add the port traffic management private shaper profile::
 
    testpmd> add port tm node shaper profile (port_id) (shaper_profile_id) \
-   (tb_rate) (tb_size) (packet_length_adjust)
+   (cmit_tb_rate) (cmit_tb_size) (peak_tb_rate) (peak_tb_size) \
+   (packet_length_adjust)
 
 where:
 
 * ``shaper_profile id``: Shaper profile ID for the new profile.
-* ``tb_rate``: Token bucket rate (bytes per second).
-* ``tb_size``: Token bucket size (bytes).
+* ``cmit_tb_rate``: Committed token bucket rate (bytes per second).
+* ``cmit_tb_size``: Committed token bucket size (bytes).
+* ``peak_tb_rate``: Peak token bucket rate (bytes per second).
+* ``peak_tb_size``: Peak token bucket size (bytes).
 * ``packet_length_adjust``: The value (bytes) to be added to the length of
   each packet for the purpose of shaping. This parameter value can be used to
   correct the packet length with the framing overhead bytes that are consumed

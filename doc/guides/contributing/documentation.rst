@@ -37,14 +37,14 @@ The main directories that contain files related to documentation are shown below
        |-- ...
 
 
-The API documentation is built from `Doxygen <http://www.stack.nl/~dimitri/doxygen/>`_ comments in the header files.
+The API documentation is built from `Doxygen <http://www.doxygen.nl>`_ comments in the header files.
 These files are mainly in the ``lib/librte_*`` directories although some of the Poll Mode Drivers in ``drivers/net``
 are also documented with Doxygen.
 
 The configuration files that are used to control the Doxygen output are in the ``doc/api`` directory.
 
 The user guides such as *The Programmers Guide* and the *FreeBSD* and *Linux Getting Started* Guides are generated
-from RST markup text files using the `Sphinx <http://sphinx-doc.org/index.html>`_ Documentation Generator.
+from RST markup text files using the `Sphinx <http://sphinx-doc.org>`_ Documentation Generator.
 
 These files are included in the ``doc/guides/`` directory.
 The output is controlled by the ``doc/guides/conf.py`` file.
@@ -80,7 +80,7 @@ added to by the developer.
 * **API documentation**
 
   The API documentation explains how to use the public DPDK functions.
-  The `API index page <http://dpdk.org/doc/api/>`_ shows the generated API documentation with related groups of functions.
+  The `API index page <http://doc.dpdk.org/api/>`_ shows the generated API documentation with related groups of functions.
 
   The API documentation should be updated via Doxygen comments when new functions are added.
 
@@ -171,7 +171,8 @@ For full support with figure and table captioning the latest version of Sphinx c
    sudo pip install --upgrade sphinx
    sudo pip install --upgrade sphinx_rtd_theme
 
-For further information on getting started with Sphinx see the `Sphinx Tutorial <http://sphinx-doc.org/tutorial.html>`_.
+For further information on getting started with Sphinx see the
+`Sphinx Getting Started <http://www.sphinx-doc.org/en/master/usage/quickstart.html>`_.
 
 .. Note::
 
@@ -200,6 +201,19 @@ The main required packages can be installed as follows:
 
    # Red Hat/Fedora, selective install.
    sudo dnf     -y install texlive-collection-latexextra
+
+`Latexmk <http://personal.psu.edu/jcc8/software/latexmk-jcc/>`_ is a perl script
+for running LaTeX for resolving cross references,
+and it also runs auxiliary programs like bibtex, makeindex if necessary, and dvips.
+It has also a number of other useful capabilities (see man 1 latexmk).
+
+.. code-block:: console
+
+   # Ubuntu/Debian.
+   sudo apt-get -y install latexmk
+
+   # Red Hat/Fedora.
+   sudo dnf     -y install latexmk
 
 
 Build commands
@@ -580,7 +594,7 @@ Doxygen Guidelines
 
 The DPDK API is documented using Doxygen comment annotations in the header files.
 Doxygen is a very powerful tool, it is extremely configurable and with a little effort can be used to create expressive documents.
-See the `Doxygen website <http://www.stack.nl/~dimitri/doxygen/>`_ for full details on how to use it.
+See the `Doxygen website <http://www.doxygen.nl>`_ for full details on how to use it.
 
 The following are some guidelines for use of Doxygen in the DPDK API documentation:
 
@@ -655,7 +669,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
        */
 
   In the API documentation the functions will be rendered as links, see the
-  `online section of the rte_ethdev.h docs <http://dpdk.org/doc/api/rte__ethdev_8h.html>`_ that contains the above text.
+  `online section of the rte_ethdev.h docs <http://doc.dpdk.org/api/rte__ethdev_8h.html>`_ that contains the above text.
 
 * The ``@see`` keyword can be used to create a *see also* link to another file or library.
   This directive should be placed on one line at the bottom of the documentation section.

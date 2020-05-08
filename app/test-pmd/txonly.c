@@ -104,6 +104,7 @@ copy_buf_to_pkt_segs(void* buf, unsigned len, struct rte_mbuf *pkt,
 		buf = ((char*) buf + copy_len);
 		seg = seg->next;
 		seg_buf = rte_pktmbuf_mtod(seg, char *);
+		copy_len = seg->data_len;
 	}
 	rte_memcpy(seg_buf, buf, (size_t) len);
 }
@@ -233,7 +234,7 @@ pkt_burst_transmit(struct fwd_stream *fs)
 		pkt->data_len = tx_pkt_seg_lengths[0];
 		pkt_seg = pkt;
 		if (tx_pkt_split == TX_PKT_SPLIT_RND)
-			nb_segs = random() % tx_pkt_nb_segs + 1;
+			nb_segs = rte_rand() % tx_pkt_nb_segs + 1;
 		else
 			nb_segs = tx_pkt_nb_segs;
 		pkt_len = pkt->data_len;

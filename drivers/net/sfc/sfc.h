@@ -158,6 +158,8 @@ struct sfc_port {
 	boolean_t			promisc;
 	boolean_t			allmulti;
 
+	struct ether_addr		default_mac_addr;
+
 	unsigned int			max_mcast_addrs;
 	unsigned int			nb_mcast_addrs;
 	uint8_t				*mcast_addrs;
@@ -173,6 +175,8 @@ struct sfc_port {
 	uint64_t			mac_stats_last_request_timestamp;
 
 	uint32_t		mac_stats_mask[EFX_MAC_STATS_MASK_NPAGES];
+
+	uint64_t			ipackets;
 };
 
 /* Adapter private data */
@@ -210,7 +214,29 @@ struct sfc_adapter {
 	unsigned int			evq_count;
 
 	unsigned int			mgmt_evq_index;
+	/*
+	 * The lock is used to serialise management event queue polling
+	 * which can be done from different context. Also the lock
+	 * guarantees that mgmt_evq_running is preserved while the lock
+	 * is held. It is used to serialise polling and start/stop
+	 * operations.
+	 *
+	 * Locks which may be held when the lock is acquired:
+	 *  - adapter lock, when:
+	 *    - device start/stop to change mgmt_evq_running
+	 *    - any control operations in client side MCDI proxy handling to
+	 *	poll management event queue waiting for proxy response
+	 *  - MCDI lock, when:
+	 *    - any control operations in client side MCDI proxy handling to
+	 *	poll management event queue waiting for proxy response
+	 *
+	 * Locks which are acquired with the lock held:
+	 *  - nic_lock, when:
+	 *    - MC event processing on management event queue polling
+	 *	(e.g. MC REBOOT or BADASSERT events)
+	 */
 	rte_spinlock_t			mgmt_evq_lock;
+	bool				mgmt_evq_running;
 	struct sfc_evq			*mgmt_evq;
 
 	unsigned int			rxq_count;
@@ -240,7 +266,7 @@ struct sfc_adapter {
 
 	/*
 	 * Shared memory copy of the Tx datapath name to be used by
-	 * the secondary process to find Rx datapath to be used.
+	 * the secondary process to find Tx datapath to be used.
 	 */
 	char				*dp_tx_name;
 	const struct sfc_dp_tx		*dp_tx;

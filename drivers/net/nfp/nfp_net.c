@@ -301,7 +301,7 @@ nfp_net_tx_queue_release_mbufs(struct nfp_net_txq *txq)
 
 	for (i = 0; i < txq->tx_count; i++) {
 		if (txq->txbufs[i].mbuf) {
-			rte_pktmbuf_free(txq->txbufs[i].mbuf);
+			rte_pktmbuf_free_seg(txq->txbufs[i].mbuf);
 			txq->txbufs[i].mbuf = NULL;
 		}
 	}
@@ -489,12 +489,10 @@ nfp_net_configure(struct rte_eth_dev *dev)
 	}
 
 	if (rxmode->jumbo_frame)
-		/* this is handled in rte_eth_dev_configure */
+		hw->mtu = rxmode->max_rx_pkt_len;
 
-	if (rxmode->hw_strip_crc) {
-		PMD_INIT_LOG(INFO, "strip CRC not supported");
-		return -EINVAL;
-	}
+	if (!rxmode->hw_strip_crc)
+		PMD_INIT_LOG(INFO, "HW does strip CRC and it is not configurable");
 
 	if (rxmode->enable_scatter) {
 		PMD_INIT_LOG(INFO, "Scatter not supported");
@@ -668,7 +666,7 @@ nfp_net_vf_read_mac(struct nfp_net_hw *hw)
 	uint32_t tmp;
 
 	tmp = rte_be_to_cpu_32(nn_cfg_readl(hw, NFP_NET_CFG_MACADDR));
-	memcpy(&hw->mac_addr[0], &tmp, sizeof(struct ether_addr));
+	memcpy(&hw->mac_addr[0], &tmp, 4);
 
 	tmp = rte_be_to_cpu_32(nn_cfg_readl(hw, NFP_NET_CFG_MACADDR + 4));
 	memcpy(&hw->mac_addr[4], &tmp, 2);
@@ -1196,7 +1194,7 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_rx_queues = (uint16_t)hw->max_rx_queues;
 	dev_info->max_tx_queues = (uint16_t)hw->max_tx_queues;
 	dev_info->min_rx_bufsize = ETHER_MIN_MTU;
-	dev_info->max_rx_pktlen = hw->mtu;
+	dev_info->max_rx_pktlen = hw->max_mtu;
 	/* Next should change when PF support is implemented */
 	dev_info->max_mac_addrs = 1;
 
@@ -1238,17 +1236,19 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 			     ETH_TXQ_FLAGS_NOOFFLOADS,
 	};
 
-	dev_info->flow_type_rss_offloads = ETH_RSS_NONFRAG_IPV4_TCP |
+	dev_info->flow_type_rss_offloads = ETH_RSS_IPV4 |
+					   ETH_RSS_NONFRAG_IPV4_TCP |
 					   ETH_RSS_NONFRAG_IPV4_UDP |
+					   ETH_RSS_IPV6 |
 					   ETH_RSS_NONFRAG_IPV6_TCP |
 					   ETH_RSS_NONFRAG_IPV6_UDP;
 
 	dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
 	dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
 
-	dev_info->speed_capa = ETH_SPEED_NUM_1G | ETH_LINK_SPEED_10G |
-			       ETH_SPEED_NUM_25G | ETH_SPEED_NUM_40G |
-			       ETH_SPEED_NUM_50G | ETH_LINK_SPEED_100G;
+	dev_info->speed_capa = ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
+			       ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G |
+			       ETH_LINK_SPEED_50G | ETH_LINK_SPEED_100G;
 
 	if (hw->cap & NFP_NET_CFG_CTRL_LSO)
 		dev_info->tx_offload_capa |= DEV_TX_OFFLOAD_TCP_TSO;
@@ -1468,6 +1468,13 @@ nfp_net_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	/* check that mtu is within the allowed range */
 	if ((mtu < ETHER_MIN_MTU) || ((uint32_t)mtu > hw->max_mtu))
 		return -EINVAL;
+
+	/* mtu setting is forbidden if port is started */
+	if (dev->data->dev_started) {
+		PMD_DRV_LOG(ERR, "port %d must be stopped before configuration",
+			    dev->data->port_id);
+		return -EBUSY;
+	}
 
 	/* switch to jumbo mode if needed */
 	if ((uint32_t)mtu > ETHER_MAX_LEN)
@@ -1817,21 +1824,20 @@ nfp_net_rx_cksum(struct nfp_net_rxq *rxq, struct nfp_net_rx_desc *rxd,
 		return;
 
 	/* If IPv4 and IP checksum error, fail */
-	if ((rxd->rxd.flags & PCIE_DESC_RX_IP4_CSUM) &&
-	    !(rxd->rxd.flags & PCIE_DESC_RX_IP4_CSUM_OK))
+	if (unlikely((rxd->rxd.flags & PCIE_DESC_RX_IP4_CSUM) &&
+	    !(rxd->rxd.flags & PCIE_DESC_RX_IP4_CSUM_OK)))
 		mb->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+	else
+		mb->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
 
 	/* If neither UDP nor TCP return */
 	if (!(rxd->rxd.flags & PCIE_DESC_RX_TCP_CSUM) &&
 	    !(rxd->rxd.flags & PCIE_DESC_RX_UDP_CSUM))
 		return;
 
-	if ((rxd->rxd.flags & PCIE_DESC_RX_TCP_CSUM) &&
-	    !(rxd->rxd.flags & PCIE_DESC_RX_TCP_CSUM_OK))
-		mb->ol_flags |= PKT_RX_L4_CKSUM_BAD;
-
-	if ((rxd->rxd.flags & PCIE_DESC_RX_UDP_CSUM) &&
-	    !(rxd->rxd.flags & PCIE_DESC_RX_UDP_CSUM_OK))
+	if (likely(rxd->rxd.flags & PCIE_DESC_RX_L4_CSUM_OK))
+		mb->ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+	else
 		mb->ol_flags |= PKT_RX_L4_CKSUM_BAD;
 }
 
@@ -1915,6 +1921,18 @@ nfp_net_set_hash(struct nfp_net_rxq *rxq, struct nfp_net_rx_desc *rxd,
 	case NFP_NET_RSS_IPV6_EX:
 		mbuf->packet_type |= RTE_PTYPE_INNER_L3_IPV6_EXT;
 		break;
+	case NFP_NET_RSS_IPV4_TCP:
+		mbuf->packet_type |= RTE_PTYPE_INNER_L3_IPV6_EXT;
+		break;
+	case NFP_NET_RSS_IPV6_TCP:
+		mbuf->packet_type |= RTE_PTYPE_INNER_L3_IPV6_EXT;
+		break;
+	case NFP_NET_RSS_IPV4_UDP:
+		mbuf->packet_type |= RTE_PTYPE_INNER_L3_IPV6_EXT;
+		break;
+	case NFP_NET_RSS_IPV6_UDP:
+		mbuf->packet_type |= RTE_PTYPE_INNER_L3_IPV6_EXT;
+		break;
 	default:
 		mbuf->packet_type |= RTE_PTYPE_INNER_L4_MASK;
 	}
@@ -1990,15 +2008,15 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			break;
 		}
 
+		rxds = &rxq->rxds[rxq->rd_p];
+		if ((rxds->rxd.meta_len_dd & PCIE_DESC_RX_DD) == 0)
+			break;
+
 		/*
 		 * Memory barrier to ensure that we won't do other
 		 * reads before the DD bit.
 		 */
 		rte_rmb();
-
-		rxds = &rxq->rxds[rxq->rd_p];
-		if ((rxds->rxd.meta_len_dd & PCIE_DESC_RX_DD) == 0)
-			break;
 
 		/*
 		 * We got a packet. Let's alloc a new mbuff for refilling the
@@ -2059,6 +2077,8 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		/* No scatter mode supported */
 		mb->nb_segs = 1;
 		mb->next = NULL;
+
+		mb->port = rxq->port_id;
 
 		/* Checking the RSS flag */
 		nfp_net_set_hash(rxq, rxds, mb);
@@ -2285,11 +2305,15 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				txq->wr_p = 0;
 
 			pkt_size -= dma_size;
-			if (!pkt_size)
-				/* End of packet */
-				txds->offset_eop |= PCIE_DESC_TX_EOP;
+
+			/*
+			 * Making the EOP, packets with just one segment
+			 * the priority
+			 */
+			if (likely(!pkt_size))
+				txds->offset_eop = PCIE_DESC_TX_EOP;
 			else
-				txds->offset_eop &= PCIE_DESC_TX_OFFSET_MASK;
+				txds->offset_eop = 0;
 
 			pkt = pkt->next;
 			/* Referencing next free TX descriptor */
@@ -2447,7 +2471,7 @@ nfp_net_reta_query(struct rte_eth_dev *dev,
 		for (j = 0; j < 4; j++) {
 			if (!(mask & (0x1 << j)))
 				continue;
-			reta_conf->reta[shift + j] =
+			reta_conf[idx].reta[shift + j] =
 				(uint8_t)((reta >> (8 * j)) & 0xF);
 		}
 	}
@@ -2484,14 +2508,22 @@ nfp_net_rss_hash_update(struct rte_eth_dev *dev,
 	}
 
 	if (rss_hf & ETH_RSS_IPV4)
-		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV4 |
-				NFP_NET_CFG_RSS_IPV4_TCP |
-				NFP_NET_CFG_RSS_IPV4_UDP;
+		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV4;
+
+	if (rss_hf & ETH_RSS_NONFRAG_IPV4_TCP)
+		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV4_TCP;
+
+	if (rss_hf & ETH_RSS_NONFRAG_IPV4_UDP)
+		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV4_UDP;
 
 	if (rss_hf & ETH_RSS_IPV6)
-		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV6 |
-				NFP_NET_CFG_RSS_IPV6_TCP |
-				NFP_NET_CFG_RSS_IPV6_UDP;
+		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV6;
+
+	if (rss_hf & ETH_RSS_NONFRAG_IPV6_TCP)
+		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV6_TCP;
+
+	if (rss_hf & ETH_RSS_NONFRAG_IPV6_UDP)
+		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV6_UDP;
 
 	cfg_rss_ctrl |= NFP_NET_CFG_RSS_MASK;
 	cfg_rss_ctrl |= NFP_NET_CFG_RSS_TOEPLITZ;
@@ -2642,6 +2674,14 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 
 	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 
+	/* NFP can not handle DMA addresses requiring more than 40 bits */
+	if (rte_eal_check_dma_mask(40) < 0) {
+		RTE_LOG(INFO, PMD, "device %s can not be used:",
+				   pci_dev->device.name);
+		RTE_LOG(INFO, PMD, "\trestricted dma mask to 40 bits!\n");
+		return -ENODEV;
+	};
+
 	if ((pci_dev->id.device_id == PCI_DEVICE_ID_NFP4000_PF_NIC) ||
 	    (pci_dev->id.device_id == PCI_DEVICE_ID_NFP6000_PF_NIC)) {
 		port = get_pf_port_number(eth_dev->data->name);
@@ -2774,7 +2814,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	hw->ver = nn_cfg_readl(hw, NFP_NET_CFG_VERSION);
 	hw->cap = nn_cfg_readl(hw, NFP_NET_CFG_CAP);
 	hw->max_mtu = nn_cfg_readl(hw, NFP_NET_CFG_MAX_MTU);
-	hw->mtu = hw->max_mtu;
+	hw->mtu = ETHER_MTU;
 
 	if (NFD_CFG_MAJOR_VERSION_of(hw->ver) < 2)
 		hw->rx_offset = NFP_NET_RX_OFFSET;
@@ -3038,14 +3078,16 @@ static int eth_nfp_pci_remove(struct rte_pci_device *pci_dev)
 
 static struct rte_pci_driver rte_nfp_net_pf_pmd = {
 	.id_table = pci_id_nfp_pf_net_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
+		     RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = nfp_pf_pci_probe,
 	.remove = eth_nfp_pci_remove,
 };
 
 static struct rte_pci_driver rte_nfp_net_vf_pmd = {
 	.id_table = pci_id_nfp_vf_net_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
+		     RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = eth_nfp_pci_probe,
 	.remove = eth_nfp_pci_remove,
 };

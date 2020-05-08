@@ -123,6 +123,11 @@
 #define IXGBE_5TUPLE_MAX_PRI            7
 #define IXGBE_5TUPLE_MIN_PRI            1
 
+/* bit of VXLAN tunnel type | 7 bits of zeros  | 8 bits of zeros*/
+#define IXGBE_FDIR_VXLAN_TUNNEL_TYPE    0x8000
+/* bit of NVGRE tunnel type | 7 bits of zeros  | 8 bits of zeros*/
+#define IXGBE_FDIR_NVGRE_TUNNEL_TYPE    0x0
+
 #define IXGBE_RSS_OFFLOAD_ALL ( \
 	ETH_RSS_IPV4 | \
 	ETH_RSS_NONFRAG_IPV4_TCP | \
@@ -499,6 +504,9 @@ struct ixgbe_adapter {
 	struct rte_timecounter      rx_tstamp_tc;
 	struct rte_timecounter      tx_tstamp_tc;
  	struct ixgbe_tm_conf        tm_conf;
+
+	/* For RSS reta table update */
+	uint8_t rss_reta_updated;
 };
 
 #define IXGBE_DEV_PRIVATE_TO_HW(adapter)\

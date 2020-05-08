@@ -354,7 +354,7 @@ struct rte_fdir_conf fdir_conf = {
 	.pballoc = RTE_FDIR_PBALLOC_64K,
 	.status = RTE_FDIR_REPORT_STATUS,
 	.mask = {
-		.vlan_tci_mask = 0x0,
+		.vlan_tci_mask = 0xFFEF,
 		.ipv4_mask     = {
 			.src_ip = 0xFFFFFFFF,
 			.dst_ip = 0xFFFFFFFF,
@@ -446,6 +446,8 @@ set_default_fwd_lcores_config(void)
 
 	nb_lc = 0;
 	for (i = 0; i < RTE_MAX_LCORE; i++) {
+		if (!rte_lcore_is_enabled(i))
+			continue;
 		sock_num = rte_lcore_to_socket_id(i);
 		if (new_socket_id(sock_num)) {
 			if (num_sockets >= RTE_MAX_NUMA_NODES) {
@@ -455,8 +457,6 @@ set_default_fwd_lcores_config(void)
 			}
 			socket_ids[num_sockets++] = sock_num;
 		}
-		if (!rte_lcore_is_enabled(i))
-			continue;
 		if (i == rte_get_master_lcore())
 			continue;
 		fwd_lcores_cpuids[nb_lc++] = i;
@@ -483,8 +483,20 @@ set_default_fwd_ports_config(void)
 	portid_t pt_id;
 	int i = 0;
 
-	RTE_ETH_FOREACH_DEV(pt_id)
+	RTE_ETH_FOREACH_DEV(pt_id) {
 		fwd_ports_ids[i++] = pt_id;
+
+		/* Update sockets info according to the attached device */
+		int socket_id = rte_eth_dev_socket_id(pt_id);
+		if (socket_id >= 0 && new_socket_id(socket_id)) {
+			if (num_sockets >= RTE_MAX_NUMA_NODES) {
+				rte_exit(EXIT_FAILURE,
+					 "Total sockets greater than %u\n",
+					 RTE_MAX_NUMA_NODES);
+			}
+			socket_ids[num_sockets++] = socket_id;
+		}
+	}
 
 	nb_cfg_ports = nb_ports;
 	nb_fwd_ports = nb_ports;
@@ -568,6 +580,98 @@ check_socket_id(const unsigned int socket_id)
 	return 0;
 }
 
+/*
+ * Get the allowed maximum number of RX queues.
+ * *pid return the port id which has minimal value of
+ * max_rx_queues in all ports.
+ */
+queueid_t
+get_allowed_max_nb_rxq(portid_t *pid)
+{
+	queueid_t allowed_max_rxq = MAX_QUEUE_ID;
+	portid_t pi;
+	struct rte_eth_dev_info dev_info;
+
+	RTE_ETH_FOREACH_DEV(pi) {
+		rte_eth_dev_info_get(pi, &dev_info);
+		if (dev_info.max_rx_queues < allowed_max_rxq) {
+			allowed_max_rxq = dev_info.max_rx_queues;
+			*pid = pi;
+		}
+	}
+	return allowed_max_rxq;
+}
+
+/*
+ * Check input rxq is valid or not.
+ * If input rxq is not greater than any of maximum number
+ * of RX queues of all ports, it is valid.
+ * if valid, return 0, else return -1
+ */
+int
+check_nb_rxq(queueid_t rxq)
+{
+	queueid_t allowed_max_rxq;
+	portid_t pid = 0;
+
+	allowed_max_rxq = get_allowed_max_nb_rxq(&pid);
+	if (rxq > allowed_max_rxq) {
+		printf("Fail: input rxq (%u) can't be greater "
+		       "than max_rx_queues (%u) of port %u\n",
+		       rxq,
+		       allowed_max_rxq,
+		       pid);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Get the allowed maximum number of TX queues.
+ * *pid return the port id which has minimal value of
+ * max_tx_queues in all ports.
+ */
+queueid_t
+get_allowed_max_nb_txq(portid_t *pid)
+{
+	queueid_t allowed_max_txq = MAX_QUEUE_ID;
+	portid_t pi;
+	struct rte_eth_dev_info dev_info;
+
+	RTE_ETH_FOREACH_DEV(pi) {
+		rte_eth_dev_info_get(pi, &dev_info);
+		if (dev_info.max_tx_queues < allowed_max_txq) {
+			allowed_max_txq = dev_info.max_tx_queues;
+			*pid = pi;
+		}
+	}
+	return allowed_max_txq;
+}
+
+/*
+ * Check input txq is valid or not.
+ * If input txq is not greater than any of maximum number
+ * of TX queues of all ports, it is valid.
+ * if valid, return 0, else return -1
+ */
+int
+check_nb_txq(queueid_t txq)
+{
+	queueid_t allowed_max_txq;
+	portid_t pid = 0;
+
+	allowed_max_txq = get_allowed_max_nb_txq(&pid);
+	if (txq > allowed_max_txq) {
+		printf("Fail: input txq (%u) can't be greater "
+		       "than max_tx_queues (%u) of port %u\n",
+		       txq,
+		       allowed_max_txq,
+		       pid);
+		return -1;
+	}
+	return 0;
+}
+
 static void
 init_config(void)
 {
@@ -581,12 +685,6 @@ init_config(void)
 	uint32_t gso_types;
 
 	memset(port_per_socket,0,RTE_MAX_NUMA_NODES);
-
-	if (numa_support) {
-		memset(port_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
-		memset(rxring_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
-		memset(txring_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
-	}
 
 	/* Configuration of logical cores. */
 	fwd_lcores = rte_zmalloc("testpmd: fwd_lcores",
@@ -617,9 +715,12 @@ init_config(void)
 			else {
 				uint32_t socket_id = rte_eth_dev_socket_id(pid);
 
-				/* if socket_id is invalid, set to 0 */
+				/*
+				 * if socket_id is invalid,
+				 * set to the first available socket.
+				 */
 				if (check_socket_id(socket_id) < 0)
-					socket_id = 0;
+					socket_id = socket_ids[0];
 				port_per_socket[socket_id]++;
 			}
 		}
@@ -753,9 +854,12 @@ init_fwd_streams(void)
 			else {
 				port->socket_id = rte_eth_dev_socket_id(pid);
 
-				/* if socket_id is invalid, set to 0 */
+				/*
+				 * if socket_id is invalid,
+				 * set to the first available socket.
+				 */
 				if (check_socket_id(port->socket_id) < 0)
-					port->socket_id = 0;
+					port->socket_id = socket_ids[0];
 			}
 		}
 		else {
@@ -788,18 +892,23 @@ init_fwd_streams(void)
 
 	/* init new */
 	nb_fwd_streams = nb_fwd_streams_new;
-	fwd_streams = rte_zmalloc("testpmd: fwd_streams",
-		sizeof(struct fwd_stream *) * nb_fwd_streams, RTE_CACHE_LINE_SIZE);
-	if (fwd_streams == NULL)
-		rte_exit(EXIT_FAILURE, "rte_zmalloc(%d (struct fwd_stream *)) "
-						"failed\n", nb_fwd_streams);
+	if (nb_fwd_streams) {
+		fwd_streams = rte_zmalloc("testpmd: fwd_streams",
+			sizeof(struct fwd_stream *) * nb_fwd_streams,
+			RTE_CACHE_LINE_SIZE);
+		if (fwd_streams == NULL)
+			rte_exit(EXIT_FAILURE, "rte_zmalloc(%d"
+				 " (struct fwd_stream *)) failed\n",
+				 nb_fwd_streams);
 
-	for (sm_id = 0; sm_id < nb_fwd_streams; sm_id++) {
-		fwd_streams[sm_id] = rte_zmalloc("testpmd: struct fwd_stream",
-				sizeof(struct fwd_stream), RTE_CACHE_LINE_SIZE);
-		if (fwd_streams[sm_id] == NULL)
-			rte_exit(EXIT_FAILURE, "rte_zmalloc(struct fwd_stream)"
-								" failed\n");
+		for (sm_id = 0; sm_id < nb_fwd_streams; sm_id++) {
+			fwd_streams[sm_id] = rte_zmalloc("testpmd:"
+				" struct fwd_stream", sizeof(struct fwd_stream),
+				RTE_CACHE_LINE_SIZE);
+			if (fwd_streams[sm_id] == NULL)
+				rte_exit(EXIT_FAILURE, "rte_zmalloc"
+					 "(struct fwd_stream) failed\n");
+		}
 	}
 
 	return 0;
@@ -833,6 +942,9 @@ pkt_burst_stats_display(const char *rx_tx, struct pkt_burst_stats *pbs)
 			pktnb_stats[1] = pktnb_stats[0];
 			burst_stats[0] = nb_burst;
 			pktnb_stats[0] = nb_pkt;
+		} else if (nb_burst > burst_stats[1]) {
+			burst_stats[1] = nb_burst;
+			pktnb_stats[1] = nb_pkt;
 		}
 	}
 	if (total_burst == 0)
@@ -876,7 +988,7 @@ fwd_port_stats_display(portid_t port_id, struct rte_eth_stats *stats)
 		printf("  RX-packets: %-14"PRIu64" RX-dropped: %-14"PRIu64"RX-total: "
 		       "%-"PRIu64"\n",
 		       stats->ipackets, stats->imissed,
-		       (uint64_t) (stats->ipackets + stats->imissed));
+		       stats->ipackets + stats->imissed);
 
 		if (cur_fwd_eng == &csum_fwd_engine)
 			printf("  Bad-ipcsum: %-14"PRIu64" Bad-l4csum: %-14"PRIu64" \n",
@@ -889,13 +1001,13 @@ fwd_port_stats_display(portid_t port_id, struct rte_eth_stats *stats)
 		printf("  TX-packets: %-14"PRIu64" TX-dropped: %-14"PRIu64"TX-total: "
 		       "%-"PRIu64"\n",
 		       stats->opackets, port->tx_dropped,
-		       (uint64_t) (stats->opackets + port->tx_dropped));
+		       stats->opackets + port->tx_dropped);
 	}
 	else {
 		printf("  RX-packets:             %14"PRIu64"    RX-dropped:%14"PRIu64"    RX-total:"
 		       "%14"PRIu64"\n",
 		       stats->ipackets, stats->imissed,
-		       (uint64_t) (stats->ipackets + stats->imissed));
+		       stats->ipackets + stats->imissed);
 
 		if (cur_fwd_eng == &csum_fwd_engine)
 			printf("  Bad-ipcsum:%14"PRIu64"    Bad-l4csum:%14"PRIu64"\n",
@@ -909,7 +1021,7 @@ fwd_port_stats_display(portid_t port_id, struct rte_eth_stats *stats)
 		printf("  TX-packets:             %14"PRIu64"    TX-dropped:%14"PRIu64"    TX-total:"
 		       "%14"PRIu64"\n",
 		       stats->opackets, port->tx_dropped,
-		       (uint64_t) (stats->opackets + port->tx_dropped));
+		       stats->opackets + port->tx_dropped);
 	}
 
 #ifdef RTE_TEST_PMD_RECORD_BURST_STATS
@@ -1119,6 +1231,31 @@ launch_packet_forwarding(lcore_function_t *pkt_fwd_on_lcore)
 }
 
 /*
+ * Update the forward ports list.
+ */
+void
+update_fwd_ports(portid_t new_pid)
+{
+	unsigned int i;
+	unsigned int new_nb_fwd_ports = 0;
+	int move = 0;
+
+	for (i = 0; i < nb_fwd_ports; ++i) {
+		if (port_id_is_invalid(fwd_ports_ids[i], DISABLED_WARN))
+			move = 1;
+		else if (move)
+			fwd_ports_ids[new_nb_fwd_ports++] = fwd_ports_ids[i];
+		else
+			new_nb_fwd_ports++;
+	}
+	if (new_pid < RTE_MAX_ETHPORTS)
+		fwd_ports_ids[new_nb_fwd_ports++] = new_pid;
+
+	nb_fwd_ports = new_nb_fwd_ports;
+	nb_cfg_ports = new_nb_fwd_ports;
+}
+
+/*
  * Launch packet forwarding configuration.
  */
 void
@@ -1153,10 +1290,6 @@ start_packet_forwarding(int with_tx_first)
 		return;
 	}
 
-	if (init_fwd_streams() < 0) {
-		printf("Fail from init_fwd_streams()\n");
-		return;
-	}
 
 	if(dcb_test) {
 		for (i = 0; i < nb_fwd_ports; i++) {
@@ -1176,10 +1309,11 @@ start_packet_forwarding(int with_tx_first)
 	}
 	test_done = 0;
 
+	fwd_config_setup();
+
 	if(!no_flush_rx)
 		flush_fwd_rx_queues();
 
-	fwd_config_setup();
 	pkt_fwd_config_display(&cur_fwd_config);
 	rxtx_config_display();
 
@@ -1726,6 +1860,13 @@ reset_port(portid_t pid)
 	if (port_id_is_invalid(pid, ENABLED_WARN))
 		return;
 
+	port = &ports[pid];
+	if ((pid == (portid_t)RTE_PORT_ALL && !all_ports_stopped()) ||
+		(pid != (portid_t)RTE_PORT_ALL && !((port->port_status != RTE_PORT_STOPPED) && (port->slave_flag == 0)))) {
+		printf("Can not reset port(s), please stop port(s) first.\n");
+		return;
+	}
+
 	printf("Resetting ports...\n");
 
 	RTE_ETH_FOREACH_DEV(pi) {
@@ -1774,15 +1915,17 @@ attach_port(char *identifier)
 		return;
 
 	socket_id = (unsigned)rte_eth_dev_socket_id(pi);
-	/* if socket_id is invalid, set to 0 */
+	/* if socket_id is invalid, set to the first available socket. */
 	if (check_socket_id(socket_id) < 0)
-		socket_id = 0;
+		socket_id = socket_ids[0];
 	reconfig(pi, socket_id);
 	rte_eth_promiscuous_enable(pi);
 
 	nb_ports = rte_eth_dev_count();
 
 	ports[pi].port_status = RTE_PORT_STOPPED;
+
+	update_fwd_ports(pi);
 
 	printf("Port %d is attached. Now total ports is %d\n", pi, nb_ports);
 	printf("Done\n");
@@ -1810,6 +1953,8 @@ detach_port(portid_t port_id)
 
 	nb_ports = rte_eth_dev_count();
 
+	update_fwd_ports(RTE_MAX_ETHPORTS);
+
 	printf("Port '%s' is detached. Now total ports is %d\n",
 			name, nb_ports);
 	printf("Done\n");
@@ -1827,9 +1972,13 @@ pmd_test_exit(void)
 	if (ports != NULL) {
 		no_link_check = 1;
 		RTE_ETH_FOREACH_DEV(pt_id) {
-			printf("\nShutting down port %d...\n", pt_id);
+			printf("\nStopping port %d...\n", pt_id);
 			fflush(stdout);
 			stop_port(pt_id);
+		}
+		RTE_ETH_FOREACH_DEV(pt_id) {
+			printf("\nShutting down port %d...\n", pt_id);
+			fflush(stdout);
 			close_port(pt_id);
 		}
 	}
@@ -1903,13 +2052,16 @@ check_all_ports_link_status(uint32_t port_mask)
 static void
 rmv_event_callback(void *arg)
 {
+	int org_no_link_check = no_link_check;
 	struct rte_eth_dev *dev;
 	portid_t port_id = (intptr_t)arg;
 
 	RTE_ETH_VALID_PORTID_OR_RET(port_id);
 	dev = &rte_eth_devices[port_id];
 
+	no_link_check = 1;
 	stop_port(port_id);
+	no_link_check = org_no_link_check;
 	close_port(port_id);
 	printf("removing device %s\n", dev->device->name);
 	if (rte_eal_dev_detach(dev->device))
@@ -1937,11 +2089,11 @@ eth_event_callback(portid_t port_id, enum rte_eth_event_type type, void *param,
 	RTE_SET_USED(ret_param);
 
 	if (type >= RTE_ETH_EVENT_MAX) {
-		fprintf(stderr, "\nPort %" PRIu8 ": %s called upon invalid event %d\n",
+		fprintf(stderr, "\nPort %" PRIu16 ": %s called upon invalid event %d\n",
 			port_id, __func__, type);
 		fflush(stderr);
 	} else if (event_print_mask & (UINT32_C(1) << type)) {
-		printf("\nPort %" PRIu8 ": %s event\n", port_id,
+		printf("\nPort %" PRIu16 ": %s event\n", port_id,
 			event_desc[type]);
 		fflush(stdout);
 	}
@@ -2154,7 +2306,10 @@ uint8_t port_is_bonding_slave(portid_t slave_pid)
 	struct rte_port *port;
 
 	port = &ports[slave_pid];
-	return port->slave_flag;
+	if ((rte_eth_devices[slave_pid].data->dev_flags &
+	    RTE_ETH_DEV_BONDED_SLAVE) || (port->slave_flag == 1))
+		return 1;
+	return 0;
 }
 
 const uint16_t vlan_tags[] = {
@@ -2165,12 +2320,14 @@ const uint16_t vlan_tags[] = {
 };
 
 static  int
-get_eth_dcb_conf(struct rte_eth_conf *eth_conf,
+get_eth_dcb_conf(portid_t pid, struct rte_eth_conf *eth_conf,
 		 enum dcb_mode_enable dcb_mode,
 		 enum rte_eth_nb_tcs num_tcs,
 		 uint8_t pfc_en)
 {
 	uint8_t i;
+	int32_t rc;
+	struct rte_eth_rss_conf rss_conf;
 
 	/*
 	 * Builds up the correct configuration for dcb+vt based on the vlan tags array
@@ -2210,6 +2367,10 @@ get_eth_dcb_conf(struct rte_eth_conf *eth_conf,
 		struct rte_eth_dcb_tx_conf *tx_conf =
 				&eth_conf->tx_adv_conf.dcb_tx_conf;
 
+		rc = rte_eth_dev_rss_hash_conf_get(pid, &rss_conf);
+		if (rc != 0)
+			return rc;
+
 		rx_conf->nb_tcs = num_tcs;
 		tx_conf->nb_tcs = num_tcs;
 
@@ -2217,8 +2378,9 @@ get_eth_dcb_conf(struct rte_eth_conf *eth_conf,
 			rx_conf->dcb_tc[i] = i % num_tcs;
 			tx_conf->dcb_tc[i] = i % num_tcs;
 		}
+
 		eth_conf->rxmode.mq_mode = ETH_MQ_RX_DCB_RSS;
-		eth_conf->rx_adv_conf.rss_conf.rss_hf = rss_hf;
+		eth_conf->rx_adv_conf.rss_conf = rss_conf;
 		eth_conf->txmode.mq_mode = ETH_MQ_TX_DCB;
 	}
 
@@ -2249,7 +2411,7 @@ init_port_dcb_config(portid_t pid,
 	dcb_config = 1;
 
 	/*set configuration of DCB in vt mode and DCB in non-vt mode*/
-	retval = get_eth_dcb_conf(&port_conf, dcb_mode, num_tcs, pfc_en);
+	retval = get_eth_dcb_conf(pid, &port_conf, dcb_mode, num_tcs, pfc_en);
 	if (retval < 0)
 		return retval;
 	port_conf.rxmode.hw_vlan_filter = 1;
@@ -2325,6 +2487,11 @@ init_port(void)
 				"rte_zmalloc(%d struct rte_port) failed\n",
 				RTE_MAX_ETHPORTS);
 	}
+
+	/* Initialize ports NUMA structures */
+	memset(port_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
+	memset(rxring_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
+	memset(txring_numa, NUMA_NO_CONFIG, RTE_MAX_ETHPORTS);
 }
 
 static void
@@ -2347,6 +2514,8 @@ print_stats(void)
 	printf("\nPort statistics ====================================");
 	for (i = 0; i < cur_fwd_config.nb_fwd_ports; i++)
 		nic_stats_display(fwd_ports_ids[i]);
+
+	fflush(stdout);
 }
 
 static void

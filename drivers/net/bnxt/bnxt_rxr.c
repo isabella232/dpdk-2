@@ -40,7 +40,6 @@
 #include <rte_memory.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_ring.h"
 #include "bnxt_rxr.h"
 #include "bnxt_rxq.h"
@@ -88,17 +87,21 @@ static inline int bnxt_alloc_ag_data(struct bnxt_rx_queue *rxq,
 	struct bnxt_sw_rx_bd *rx_buf = &rxr->ag_buf_ring[prod];
 	struct rte_mbuf *data;
 
+	if (rxbd == NULL) {
+		RTE_LOG(ERR, PMD, "Jumbo Frame. rxbd is NULL\n");
+		return -EINVAL;
+	}
+
+	if (rx_buf == NULL) {
+		RTE_LOG(ERR, PMD, "Jumbo Frame. rx_buf is NULL\n");
+		return -EINVAL;
+	}
+
 	data = __bnxt_alloc_rx_data(rxq->mb_pool);
 	if (!data) {
 		rte_atomic64_inc(&rxq->bp->rx_mbuf_alloc_fail);
 		return -ENOMEM;
 	}
-
-	if (rxbd == NULL)
-		RTE_LOG(ERR, PMD, "Jumbo Frame. rxbd is NULL\n");
-	if (rx_buf == NULL)
-		RTE_LOG(ERR, PMD, "Jumbo Frame. rx_buf is NULL\n");
-
 
 	rx_buf->mbuf = data;
 
@@ -199,7 +202,7 @@ static void bnxt_tpa_start(struct bnxt_rx_queue *rxq,
 	if (tpa_start1->flags2 &
 	    rte_cpu_to_le_32(RX_TPA_START_CMPL_FLAGS2_META_FORMAT_VLAN)) {
 		mbuf->vlan_tci = rte_le_to_cpu_32(tpa_start1->metadata);
-		mbuf->ol_flags |= PKT_RX_VLAN;
+		mbuf->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 	}
 	if (likely(tpa_start1->flags2 &
 		   rte_cpu_to_le_32(RX_TPA_START_CMPL_FLAGS2_L4_CS_CALC)))
@@ -464,18 +467,22 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 			(RX_PKT_CMPL_METADATA_VID_MASK |
 			RX_PKT_CMPL_METADATA_DE |
 			RX_PKT_CMPL_METADATA_PRI_MASK);
-		mbuf->ol_flags |= PKT_RX_VLAN;
+		mbuf->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 	}
 
 	if (likely(RX_CMP_IP_CS_OK(rxcmp1)))
 		mbuf->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+	else if (likely(RX_CMP_IP_CS_UNKNOWN(rxcmp1)))
+		mbuf->ol_flags |= PKT_RX_IP_CKSUM_UNKNOWN;
 	else
-		mbuf->ol_flags |= PKT_RX_IP_CKSUM_NONE;
+		mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
 
 	if (likely(RX_CMP_L4_CS_OK(rxcmp1)))
 		mbuf->ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+	else if (likely(RX_CMP_L4_CS_UNKNOWN(rxcmp1)))
+		mbuf->ol_flags |= PKT_RX_L4_CKSUM_UNKNOWN;
 	else
-		mbuf->ol_flags |= PKT_RX_L4_CKSUM_NONE;
+		mbuf->ol_flags |= PKT_RX_L4_CKSUM_BAD;
 
 	mbuf->packet_type = bnxt_parse_pkt_type(rxcmp, rxcmp1);
 
@@ -730,7 +737,7 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 	if (rxq->rx_buf_use_size <= size)
 		size = rxq->rx_buf_use_size;
 
-	type = RX_PROD_PKT_BD_TYPE_RX_PROD_PKT;
+	type = RX_PROD_PKT_BD_TYPE_RX_PROD_PKT | RX_PROD_PKT_BD_FLAGS_EOP_PAD;
 
 	rxr = rxq->rx_ring;
 	ring = rxr->rx_ring_struct;

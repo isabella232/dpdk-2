@@ -359,6 +359,11 @@ static int qat_alg_do_precomputes(enum icp_qat_hw_auth_algo hash_alg,
 
 		in = rte_zmalloc("working mem for key",
 				ICP_QAT_HW_AES_XCBC_MAC_STATE2_SZ, 16);
+		if (in == NULL) {
+			PMD_DRV_LOG(ERR, "Failed to alloc memory");
+			return -ENOMEM;
+		}
+
 		rte_memcpy(in, qat_aes_xcbc_key_seed,
 				ICP_QAT_HW_AES_XCBC_MAC_STATE2_SZ);
 		for (x = 0; x < HASH_XCBC_PRECOMP_KEY_NUM; x++) {
@@ -389,6 +394,11 @@ static int qat_alg_do_precomputes(enum icp_qat_hw_auth_algo hash_alg,
 				ICP_QAT_HW_GALOIS_E_CTR0_SZ);
 		in = rte_zmalloc("working mem for key",
 				ICP_QAT_HW_GALOIS_H_SZ, 16);
+		if (in == NULL) {
+			PMD_DRV_LOG(ERR, "Failed to alloc memory");
+			return -ENOMEM;
+		}
+
 		memset(in, 0, ICP_QAT_HW_GALOIS_H_SZ);
 		if (AES_set_encrypt_key(auth_key, auth_keylen << 3,
 			&enc_key) != 0) {
@@ -403,8 +413,8 @@ static int qat_alg_do_precomputes(enum icp_qat_hw_auth_algo hash_alg,
 	}
 
 	block_size = qat_hash_get_block_size(hash_alg);
-	if (block_size <= 0)
-		return -EFAULT;
+	if (block_size < 0)
+		return block_size;
 	/* init ipad and opad from key and xor with fixed values */
 	memset(ipad, 0, block_size);
 	memset(opad, 0, block_size);
@@ -741,11 +751,18 @@ int qat_alg_aead_session_create_content_desc_auth(struct qat_session *cdesc,
 
 	if (cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_SNOW_3G_UIA2
 		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_KASUMI_F9
-		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_ZUC_3G_128_EIA3)
+		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_ZUC_3G_128_EIA3
+		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_AES_XCBC_MAC
+		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_AES_CBC_MAC
+		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_NULL)
 		hash->auth_counter.counter = 0;
-	else
-		hash->auth_counter.counter = rte_bswap32(
-				qat_hash_get_block_size(cdesc->qat_hash_alg));
+	else {
+		int block_size = qat_hash_get_block_size(cdesc->qat_hash_alg);
+
+		if (block_size < 0)
+			return block_size;
+		hash->auth_counter.counter = rte_bswap32(block_size);
+	}
 
 	cdesc->cd_cur_ptr += sizeof(struct icp_qat_hw_auth_setup);
 

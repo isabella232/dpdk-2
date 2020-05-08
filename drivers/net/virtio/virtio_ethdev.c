@@ -97,7 +97,6 @@ static void virtio_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index);
 static void virtio_mac_addr_set(struct rte_eth_dev *dev,
 				struct ether_addr *mac_addr);
 
-static int virtio_intr_enable(struct rte_eth_dev *dev);
 static int virtio_intr_disable(struct rte_eth_dev *dev);
 
 static int virtio_dev_queue_stats_mapping_set(
@@ -292,17 +291,6 @@ static void
 virtio_dev_queue_release(void *queue __rte_unused)
 {
 	/* do nothing */
-}
-
-static int
-virtio_get_queue_type(struct virtio_hw *hw, uint16_t vtpci_queue_idx)
-{
-	if (vtpci_queue_idx == hw->max_queue_pairs * 2)
-		return VTNET_CQ;
-	else if (vtpci_queue_idx % 2 == 0)
-		return VTNET_RQ;
-	else
-		return VTNET_TQ;
 }
 
 static uint16_t
@@ -751,6 +739,7 @@ virtio_dev_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
 	struct virtqueue *vq = rxvq->vq;
 
 	virtqueue_enable_intr(vq);
+	virtio_mb();
 	return 0;
 }
 
@@ -893,7 +882,7 @@ static int virtio_dev_xstats_get_names(struct rte_eth_dev *dev,
 		/* Note: limit checked in rte_eth_xstats_names() */
 
 		for (i = 0; i < dev->data->nb_rx_queues; i++) {
-			struct virtqueue *rxvq = dev->data->rx_queues[i];
+			struct virtnet_rx *rxvq = dev->data->rx_queues[i];
 			if (rxvq == NULL)
 				continue;
 			for (t = 0; t < VIRTIO_NB_RXQ_XSTATS; t++) {
@@ -906,7 +895,7 @@ static int virtio_dev_xstats_get_names(struct rte_eth_dev *dev,
 		}
 
 		for (i = 0; i < dev->data->nb_tx_queues; i++) {
-			struct virtqueue *txvq = dev->data->tx_queues[i];
+			struct virtnet_tx *txvq = dev->data->tx_queues[i];
 			if (txvq == NULL)
 				continue;
 			for (t = 0; t < VIRTIO_NB_TXQ_XSTATS; t++) {
@@ -1405,6 +1394,11 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 	/* Reset the device although not necessary at startup */
 	vtpci_reset(hw);
 
+	if (hw->vqs) {
+		virtio_dev_free_mbufs(eth_dev);
+		virtio_free_queues(hw);
+	}
+
 	/* Tell the host we've noticed this device. */
 	vtpci_set_status(hw, VIRTIO_CONFIG_STATUS_ACK);
 
@@ -1508,6 +1502,8 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 	} else {
 		PMD_INIT_LOG(DEBUG, "config->max_virtqueue_pairs=1");
 		hw->max_queue_pairs = 1;
+		hw->max_mtu = VIRTIO_MAX_RX_PKTLEN - ETHER_HDR_LEN -
+			VLAN_TAG_LEN - hw->vtnet_hdr_size;
 	}
 
 	ret = virtio_alloc_queues(eth_dev);
@@ -1628,15 +1624,11 @@ eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 	if (ret < 0)
 		goto out;
 
-	/* Setup interrupt callback  */
-	if (eth_dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
-		rte_intr_callback_register(eth_dev->intr_handle,
-			virtio_interrupt_handler, eth_dev);
-
 	return 0;
 
 out:
 	rte_free(eth_dev->data->mac_addrs);
+	eth_dev->data->mac_addrs = NULL;
 	return ret;
 }
 
@@ -1658,11 +1650,6 @@ eth_virtio_dev_uninit(struct rte_eth_dev *eth_dev)
 	rte_free(eth_dev->data->mac_addrs);
 	eth_dev->data->mac_addrs = NULL;
 
-	/* reset interrupt callback  */
-	if (eth_dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
-		rte_intr_callback_unregister(eth_dev->intr_handle,
-						virtio_interrupt_handler,
-						eth_dev);
 	if (eth_dev->device)
 		rte_pci_unmap_device(RTE_ETH_DEV_TO_PCI(eth_dev));
 
@@ -1754,7 +1741,7 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 
 	if (rxmode->enable_lro &&
 		(!vtpci_with_feature(hw, VIRTIO_NET_F_GUEST_TSO4) ||
-			!vtpci_with_feature(hw, VIRTIO_NET_F_GUEST_TSO4))) {
+		 !vtpci_with_feature(hw, VIRTIO_NET_F_GUEST_TSO6))) {
 		PMD_DRV_LOG(ERR,
 			"Large Receive Offload not available on this host");
 		return -ENOTSUP;
@@ -1784,7 +1771,7 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 	hw->use_simple_rx = 1;
 	hw->use_simple_tx = 1;
 
-#if defined RTE_ARCH_ARM64 || defined CONFIG_RTE_ARCH_ARM
+#if defined RTE_ARCH_ARM64 || defined RTE_ARCH_ARM
 	if (!rte_cpu_get_flag_enabled(RTE_CPUFLAG_NEON)) {
 		hw->use_simple_rx = 0;
 		hw->use_simple_tx = 0;
@@ -1839,6 +1826,12 @@ virtio_dev_start(struct rte_eth_dev *dev)
 	    dev->data->dev_conf.intr_conf.rxq) {
 		virtio_intr_disable(dev);
 
+		/* Setup interrupt callback  */
+		if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
+			rte_intr_callback_register(dev->intr_handle,
+						   virtio_interrupt_handler,
+						   dev);
+
 		if (virtio_intr_enable(dev) < 0) {
 			PMD_DRV_LOG(ERR, "interrupt enable failed");
 			return -EIO;
@@ -1860,7 +1853,7 @@ virtio_dev_start(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rxvq = dev->data->rx_queues[i];
 		/* Flush the old packets */
-		virtqueue_flush(rxvq->vq);
+		virtqueue_rxvq_flush(rxvq->vq);
 		virtqueue_notify(rxvq->vq);
 	}
 
@@ -1898,6 +1891,9 @@ static void virtio_dev_free_mbufs(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		struct virtnet_rx *rxvq = dev->data->rx_queues[i];
 
+		if (rxvq == NULL || rxvq->vq == NULL)
+			continue;
+
 		PMD_INIT_LOG(DEBUG,
 			     "Before freeing rxq[%d] used and unused buf", i);
 		VIRTQUEUE_DUMP(rxvq->vq);
@@ -1916,6 +1912,9 @@ static void virtio_dev_free_mbufs(struct rte_eth_dev *dev)
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		struct virtnet_tx *txvq = dev->data->tx_queues[i];
+
+		if (txvq == NULL || txvq->vq == NULL)
+			continue;
 
 		PMD_INIT_LOG(DEBUG,
 			     "Before freeing txq[%d] used and unused bufs",
@@ -1947,8 +1946,16 @@ virtio_dev_stop(struct rte_eth_dev *dev)
 
 	PMD_INIT_LOG(DEBUG, "stop");
 
-	if (intr_conf->lsc || intr_conf->rxq)
+	if (intr_conf->lsc || intr_conf->rxq) {
 		virtio_intr_disable(dev);
+
+		/* Reset interrupt callback  */
+		if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC) {
+			rte_intr_callback_unregister(dev->intr_handle,
+						     virtio_interrupt_handler,
+						     dev);
+		}
+	}
 
 	hw->started = 0;
 	memset(&link, 0, sizeof(link));

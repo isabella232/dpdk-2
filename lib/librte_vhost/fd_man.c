@@ -155,7 +155,9 @@ fdset_add(struct fdset *pfdset, int fd, fd_cb rcb, fd_cb wcb, void *dat)
 	pthread_mutex_lock(&pfdset->fd_mutex);
 	i = pfdset->num < MAX_FDS ? pfdset->num++ : -1;
 	if (i == -1) {
+		pthread_mutex_lock(&pfdset->fd_pooling_mutex);
 		fdset_shrink_nolock(pfdset);
+		pthread_mutex_unlock(&pfdset->fd_pooling_mutex);
 		i = pfdset->num < MAX_FDS ? pfdset->num++ : -1;
 		if (i == -1) {
 			pthread_mutex_unlock(&pfdset->fd_mutex);
@@ -200,6 +202,38 @@ fdset_del(struct fdset *pfdset, int fd)
 	return dat;
 }
 
+/**
+ *  Unregister the fd from the fdset.
+ *
+ *  If parameters are invalid, return directly -2.
+ *  And check whether fd is busy, if yes, return -1.
+ *  Otherwise, try to delete the fd from fdset and
+ *  return true.
+ */
+int
+fdset_try_del(struct fdset *pfdset, int fd)
+{
+	int i;
+
+	if (pfdset == NULL || fd == -1)
+		return -2;
+
+	pthread_mutex_lock(&pfdset->fd_mutex);
+	i = fdset_find_fd(pfdset, fd);
+	if (i != -1 && pfdset->fd[i].busy) {
+		pthread_mutex_unlock(&pfdset->fd_mutex);
+		return -1;
+	}
+
+	if (i != -1) {
+		pfdset->fd[i].fd = -1;
+		pfdset->fd[i].rcb = pfdset->fd[i].wcb = NULL;
+		pfdset->fd[i].dat = NULL;
+	}
+
+	pthread_mutex_unlock(&pfdset->fd_mutex);
+	return 0;
+}
 
 /**
  * This functions runs in infinite blocking loop until there is no fd in
@@ -240,7 +274,9 @@ fdset_event_dispatch(void *arg)
 		numfds = pfdset->num;
 		pthread_mutex_unlock(&pfdset->fd_mutex);
 
+		pthread_mutex_lock(&pfdset->fd_pooling_mutex);
 		val = poll(pfdset->rwfds, numfds, 1000 /* millisecs */);
+		pthread_mutex_unlock(&pfdset->fd_pooling_mutex);
 		if (val < 0)
 			continue;
 

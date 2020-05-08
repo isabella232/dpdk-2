@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright 2017 NXP.
+ *   Copyright 2017,2019 NXP.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -395,8 +395,7 @@ dpaa2_eventdev_queue_def_conf(struct rte_eventdev *dev, uint8_t queue_id,
 	RTE_SET_USED(queue_conf);
 
 	queue_conf->nb_atomic_flows = DPAA2_EVENT_QUEUE_ATOMIC_FLOWS;
-	queue_conf->schedule_type = RTE_SCHED_TYPE_ATOMIC |
-				      RTE_SCHED_TYPE_PARALLEL;
+	queue_conf->schedule_type = RTE_SCHED_TYPE_PARALLEL;
 	queue_conf->priority = RTE_EVENT_DEV_PRIORITY_NORMAL;
 }
 
@@ -489,7 +488,6 @@ dpaa2_eventdev_port_unlink(struct rte_eventdev *dev, void *port,
 		dpio_remove_static_dequeue_channel(dpaa2_portal->dpio_dev->dpio,
 					0, dpaa2_portal->dpio_dev->token,
 			evq_info->dpcon->dpcon_id);
-		evq_info->link = 0;
 	}
 
 	return (int)nb_unlinks;
@@ -510,8 +508,6 @@ dpaa2_eventdev_port_link(struct rte_eventdev *dev, void *port,
 
 	for (i = 0; i < nb_links; i++) {
 		evq_info = &priv->evq_info[queues[i]];
-		if (evq_info->link)
-			continue;
 
 		ret = dpio_add_static_dequeue_channel(
 			dpaa2_portal->dpio_dev->dpio,
@@ -526,7 +522,6 @@ dpaa2_eventdev_port_link(struct rte_eventdev *dev, void *port,
 		qbman_swp_push_set(dpaa2_portal->dpio_dev->sw_portal,
 				   channel_index, 1);
 		evq_info->dpcon->channel_index = channel_index;
-		evq_info->link = 1;
 	}
 
 	RTE_SET_USED(priorities);
@@ -540,7 +535,6 @@ err:
 		dpio_remove_static_dequeue_channel(dpaa2_portal->dpio_dev->dpio,
 					0, dpaa2_portal->dpio_dev->token,
 			evq_info->dpcon->dpcon_id);
-		evq_info->link = 0;
 	}
 	return ret;
 }

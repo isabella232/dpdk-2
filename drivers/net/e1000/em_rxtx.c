@@ -79,6 +79,8 @@
 #define E1000_RXDCTL_GRAN	0x01000000 /* RXDCTL Granularity */
 
 #define E1000_TX_OFFLOAD_MASK ( \
+		PKT_TX_IPV6 |           \
+		PKT_TX_IPV4 |           \
 		PKT_TX_IP_CKSUM |       \
 		PKT_TX_L4_MASK |        \
 		PKT_TX_VLAN_PKT)
@@ -1369,12 +1371,13 @@ eth_em_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	/*
-	 * EM devices don't support drop_en functionality
+	 * EM devices don't support drop_en functionality.
+	 * It's an optimization that does nothing on single-queue devices,
+	 * so just log the issue and carry on.
 	 */
 	if (rx_conf->rx_drop_en) {
-		PMD_INIT_LOG(ERR, "drop_en functionality not supported by "
+		PMD_INIT_LOG(NOTICE, "drop_en functionality not supported by "
 			     "device");
-		return -EINVAL;
 	}
 
 	/* Free memory prior to re-allocation if needed. */

@@ -91,7 +91,7 @@ static struct rte_eth_link pmd_link = {
 	.link_speed = ETH_SPEED_NUM_10G,
 	.link_duplex = ETH_LINK_FULL_DUPLEX,
 	.link_status = ETH_LINK_DOWN,
-	.link_autoneg = ETH_LINK_SPEED_AUTONEG,
+	.link_autoneg = ETH_LINK_FIXED,
 };
 
 static uint16_t
@@ -456,6 +456,12 @@ eth_rss_hash_conf_get(struct rte_eth_dev *dev,
 	return 0;
 }
 
+static void
+eth_mac_address_set(__rte_unused struct rte_eth_dev *dev,
+		    __rte_unused struct ether_addr *addr)
+{
+}
+
 static const struct eth_dev_ops ops = {
 	.dev_start = eth_dev_start,
 	.dev_stop = eth_dev_stop,
@@ -466,6 +472,7 @@ static const struct eth_dev_ops ops = {
 	.rx_queue_release = eth_queue_release,
 	.tx_queue_release = eth_queue_release,
 	.link_update = eth_link_update,
+	.mac_addr_set = eth_mac_address_set,
 	.stats_get = eth_stats_get,
 	.stats_reset = eth_stats_reset,
 	.reta_update = eth_rss_reta_update,
@@ -483,7 +490,7 @@ eth_dev_null_create(struct rte_vdev_device *dev,
 {
 	const unsigned nb_rx_queues = 1;
 	const unsigned nb_tx_queues = 1;
-	struct rte_eth_dev_data *data = NULL;
+	struct rte_eth_dev_data *data;
 	struct pmd_internals *internals = NULL;
 	struct rte_eth_dev *eth_dev = NULL;
 
@@ -500,19 +507,9 @@ eth_dev_null_create(struct rte_vdev_device *dev,
 	RTE_LOG(INFO, PMD, "Creating null ethdev on numa socket %u\n",
 		dev->device.numa_node);
 
-	/* now do all data allocation - for eth_dev structure, dummy pci driver
-	 * and internal (private) data
-	 */
-	data = rte_zmalloc_socket(rte_vdev_device_name(dev), sizeof(*data), 0,
-		dev->device.numa_node);
-	if (!data)
-		return -ENOMEM;
-
 	eth_dev = rte_eth_vdev_allocate(dev, sizeof(*internals));
-	if (!eth_dev) {
-		rte_free(data);
+	if (!eth_dev)
 		return -ENOMEM;
-	}
 
 	/* now put it all together
 	 * - store queue data in internals,
@@ -533,13 +530,12 @@ eth_dev_null_create(struct rte_vdev_device *dev,
 
 	rte_memcpy(internals->rss_key, default_rss_key, 40);
 
-	rte_memcpy(data, eth_dev->data, sizeof(*data));
+	data = eth_dev->data;
 	data->nb_rx_queues = (uint16_t)nb_rx_queues;
 	data->nb_tx_queues = (uint16_t)nb_tx_queues;
 	data->dev_link = pmd_link;
 	data->mac_addrs = &eth_addr;
 
-	eth_dev->data = data;
 	eth_dev->dev_ops = &ops;
 
 	/* finally assign rx and tx ops */
@@ -657,7 +653,6 @@ rte_pmd_null_remove(struct rte_vdev_device *dev)
 		return -1;
 
 	rte_free(eth_dev->data->dev_private);
-	rte_free(eth_dev->data);
 
 	rte_eth_dev_release_port(eth_dev);
 

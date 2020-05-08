@@ -63,8 +63,8 @@
 #include <rte_errno.h>
 #include <rte_spinlock.h>
 #include <rte_string_fns.h>
+#include <rte_ether.h>
 
-#include "rte_ether.h"
 #include "rte_ethdev.h"
 #include "ethdev_profile.h"
 
@@ -93,6 +93,7 @@ static const struct rte_eth_xstats_name_off rte_stats_strings[] = {
 	{"tx_good_packets", offsetof(struct rte_eth_stats, opackets)},
 	{"rx_good_bytes", offsetof(struct rte_eth_stats, ibytes)},
 	{"tx_good_bytes", offsetof(struct rte_eth_stats, obytes)},
+	{"rx_missed_errors", offsetof(struct rte_eth_stats, imissed)},
 	{"rx_errors", offsetof(struct rte_eth_stats, ierrors)},
 	{"tx_errors", offsetof(struct rte_eth_stats, oerrors)},
 	{"rx_mbuf_allocation_errors", offsetof(struct rte_eth_stats,
@@ -191,8 +192,12 @@ rte_eth_dev_find_free_port(void)
 	unsigned i;
 
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
-		if (rte_eth_devices[i].state == RTE_ETH_DEV_UNUSED)
+		/* Using shared name field to find a free port. */
+		if (rte_eth_dev_data[i].name[0] == '\0') {
+			RTE_ASSERT(rte_eth_devices[i].state ==
+				   RTE_ETH_DEV_UNUSED);
 			return i;
+		}
 	}
 	return RTE_MAX_ETHPORTS;
 }
@@ -217,14 +222,14 @@ rte_eth_dev_allocate(const char *name)
 	uint16_t port_id;
 	struct rte_eth_dev *eth_dev;
 
+	if (rte_eth_dev_data == NULL)
+		rte_eth_dev_data_alloc();
+
 	port_id = rte_eth_dev_find_free_port();
 	if (port_id == RTE_MAX_ETHPORTS) {
 		RTE_PMD_DEBUG_TRACE("Reached maximum number of Ethernet ports\n");
 		return NULL;
 	}
-
-	if (rte_eth_dev_data == NULL)
-		rte_eth_dev_data_alloc();
 
 	if (rte_eth_dev_allocated(name) != NULL) {
 		RTE_PMD_DEBUG_TRACE("Ethernet Device with name %s already allocated!\n",
@@ -232,7 +237,6 @@ rte_eth_dev_allocate(const char *name)
 		return NULL;
 	}
 
-	memset(&rte_eth_dev_data[port_id], 0, sizeof(struct rte_eth_dev_data));
 	eth_dev = eth_dev_get(port_id);
 	snprintf(eth_dev->data->name, sizeof(eth_dev->data->name), "%s", name);
 	eth_dev->data->port_id = port_id;
@@ -278,6 +282,7 @@ rte_eth_dev_release_port(struct rte_eth_dev *eth_dev)
 	if (eth_dev == NULL)
 		return -EINVAL;
 
+	memset(eth_dev->data, 0, sizeof(struct rte_eth_dev_data));
 	eth_dev->state = RTE_ETH_DEV_UNUSED;
 	return 0;
 }
@@ -438,6 +443,7 @@ rte_eth_dev_detach(uint16_t port_id, char *name)
 		goto err;
 
 	rte_eth_devices[port_id].state = RTE_ETH_DEV_UNUSED;
+	memset(&rte_eth_dev_data[port_id], 0, sizeof(struct rte_eth_dev_data));
 	return 0;
 
 err:
@@ -502,6 +508,13 @@ rte_eth_dev_rx_queue_start(uint16_t port_id, uint16_t rx_queue_id)
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -EINVAL);
 
 	dev = &rte_eth_devices[port_id];
+	if (!dev->data->dev_started) {
+		RTE_PMD_DEBUG_TRACE(
+		    "port %d must be started before start any queue\n",
+		    port_id);
+		return -EINVAL;
+	}
+
 	if (rx_queue_id >= dev->data->nb_rx_queues) {
 		RTE_PMD_DEBUG_TRACE("Invalid RX queue_id=%d\n", rx_queue_id);
 		return -EINVAL;
@@ -554,6 +567,13 @@ rte_eth_dev_tx_queue_start(uint16_t port_id, uint16_t tx_queue_id)
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -EINVAL);
 
 	dev = &rte_eth_devices[port_id];
+	if (!dev->data->dev_started) {
+		RTE_PMD_DEBUG_TRACE(
+		    "port %d must be started before start any queue\n",
+		    port_id);
+		return -EINVAL;
+	}
+
 	if (tx_queue_id >= dev->data->nb_tx_queues) {
 		RTE_PMD_DEBUG_TRACE("Invalid TX queue_id=%d\n", tx_queue_id);
 		return -EINVAL;
@@ -1179,7 +1199,7 @@ rte_eth_rx_queue_setup(uint16_t port_id, uint16_t rx_queue_id,
 			nb_rx_desc % dev_info.rx_desc_lim.nb_align != 0) {
 
 		RTE_PMD_DEBUG_TRACE("Invalid value for nb_rx_desc(=%hu), "
-			"should be: <= %hu, = %hu, and a product of %hu\n",
+			"should be: <= %hu, >= %hu, and a product of %hu\n",
 			nb_rx_desc,
 			dev_info.rx_desc_lim.nb_max,
 			dev_info.rx_desc_lim.nb_min,
@@ -1301,7 +1321,7 @@ rte_eth_tx_queue_setup(uint16_t port_id, uint16_t tx_queue_id,
 	    nb_tx_desc < dev_info.tx_desc_lim.nb_min ||
 	    nb_tx_desc % dev_info.tx_desc_lim.nb_align != 0) {
 		RTE_PMD_DEBUG_TRACE("Invalid value for nb_tx_desc(=%hu), "
-				"should be: <= %hu, = %hu, and a product of %hu\n",
+				"should be: <= %hu, >= %hu, and a product of %hu\n",
 				nb_tx_desc,
 				dev_info.tx_desc_lim.nb_max,
 				dev_info.tx_desc_lim.nb_min,
@@ -2030,6 +2050,12 @@ rte_eth_dev_info_get(uint16_t port_id, struct rte_eth_dev_info *dev_info)
 	memset(dev_info, 0, sizeof(struct rte_eth_dev_info));
 	dev_info->rx_desc_lim = lim;
 	dev_info->tx_desc_lim = lim;
+
+	/* Maximum number of queues should be <= RTE_MAX_QUEUES_PER_PORT */
+	dev_info->max_rx_queues = RTE_MIN(dev_info->max_rx_queues,
+			RTE_MAX_QUEUES_PER_PORT);
+	dev_info->max_tx_queues = RTE_MIN(dev_info->max_tx_queues,
+			RTE_MAX_QUEUES_PER_PORT);
 
 	RTE_FUNC_PTR_OR_RET(*dev->dev_ops->dev_infos_get);
 	(*dev->dev_ops->dev_infos_get)(dev, dev_info);

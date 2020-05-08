@@ -208,7 +208,7 @@ struct efd_offline_group_rules {
 	/**< Array with all values of the keys of the group. */
 
 	uint8_t bin_id[EFD_MAX_GROUP_NUM_RULES];
-	/**< Stores the bin for each correspending key to
+	/**< Stores the bin for each corresponding key to
 	 * avoid having to recompute it
 	 */
 };
@@ -721,7 +721,8 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 			offline_cpu_socket, 0);
 	if (r == NULL) {
 		RTE_LOG(ERR, EFD, "memory allocation failed\n");
-		goto error_unlock_exit;
+		rte_efd_free(table);
+		return NULL;
 	}
 
 	/* Populate free slots ring. Entry zero is reserved for key misses. */
@@ -768,6 +769,8 @@ void
 rte_efd_free(struct rte_efd_table *table)
 {
 	uint8_t socket_id;
+	struct rte_efd_list *efd_list;
+	struct rte_tailq_entry *te, *temp;
 
 	if (table == NULL)
 		return;
@@ -775,6 +778,18 @@ rte_efd_free(struct rte_efd_table *table)
 	for (socket_id = 0; socket_id < RTE_MAX_NUMA_NODES; socket_id++)
 		rte_free(table->chunks[socket_id]);
 
+	efd_list = RTE_TAILQ_CAST(rte_efd_tailq.head, rte_efd_list);
+	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+
+	TAILQ_FOREACH_SAFE(te, efd_list, next, temp) {
+		if (te->data == (void *) table) {
+			TAILQ_REMOVE(efd_list, te, next);
+			rte_free(te);
+			break;
+		}
+	}
+
+	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
 	rte_ring_free(table->free_slots);
 	rte_free(table->offline_chunks);
 	rte_free(table->keys);

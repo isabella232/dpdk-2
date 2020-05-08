@@ -35,6 +35,7 @@
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_errno.h>
+#include <rte_string_fns.h>
 
 #include "efx.h"
 
@@ -458,8 +459,6 @@ sfc_rx_queue_release(void *queue)
 
 	sfc_log_init(sa, "RxQ=%u", sw_index);
 
-	sa->eth_dev->data->rx_queues[sw_index] = NULL;
-
 	sfc_rx_qfini(sa, sw_index);
 
 	sfc_adapter_unlock(sa);
@@ -514,12 +513,32 @@ sfc_tx_queue_release(void *queue)
 
 	sfc_adapter_lock(sa);
 
-	SFC_ASSERT(sw_index < sa->eth_dev->data->nb_tx_queues);
-	sa->eth_dev->data->tx_queues[sw_index] = NULL;
-
 	sfc_tx_qfini(sa, sw_index);
 
 	sfc_adapter_unlock(sa);
+}
+
+/*
+ * Some statistics are computed as A - B where A and B each increase
+ * monotonically with some hardware counter(s) and the counters are read
+ * asynchronously.
+ *
+ * If packet X is counted in A, but not counted in B yet, computed value is
+ * greater than real.
+ *
+ * If packet X is not counted in A at the moment of reading the counter,
+ * but counted in B at the moment of reading the counter, computed value
+ * is less than real.
+ *
+ * However, counter which grows backward is worse evil than slightly wrong
+ * value. So, let's try to guarantee that it never happens except may be
+ * the case when the MAC stats are zeroed as a result of a NIC reset.
+ */
+static void
+sfc_update_diff_stat(uint64_t *stat, uint64_t newval)
+{
+	if ((int64_t)(newval - *stat) > 0 || newval == 0)
+		*stat = newval;
 }
 
 static int
@@ -556,11 +575,9 @@ sfc_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			mac_stats[EFX_MAC_VADAPTER_TX_UNICAST_BYTES] +
 			mac_stats[EFX_MAC_VADAPTER_TX_MULTICAST_BYTES] +
 			mac_stats[EFX_MAC_VADAPTER_TX_BROADCAST_BYTES];
-		stats->imissed = mac_stats[EFX_MAC_VADAPTER_RX_OVERFLOW];
-		stats->ierrors = mac_stats[EFX_MAC_VADAPTER_RX_BAD_PACKETS];
+		stats->imissed = mac_stats[EFX_MAC_VADAPTER_RX_BAD_PACKETS];
 		stats->oerrors = mac_stats[EFX_MAC_VADAPTER_TX_BAD_PACKETS];
 	} else {
-		stats->ipackets = mac_stats[EFX_MAC_RX_PKTS];
 		stats->opackets = mac_stats[EFX_MAC_TX_PKTS];
 		stats->ibytes = mac_stats[EFX_MAC_RX_OCTETS];
 		stats->obytes = mac_stats[EFX_MAC_TX_OCTETS];
@@ -586,6 +603,13 @@ sfc_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			mac_stats[EFX_MAC_RX_ALIGN_ERRORS] +
 			mac_stats[EFX_MAC_RX_JABBER_PKTS];
 		/* no oerrors counters supported on EF10 */
+
+		/* Exclude missed, errors and pauses from Rx packets */
+		sfc_update_diff_stat(&port->ipackets,
+			mac_stats[EFX_MAC_RX_PKTS] -
+			mac_stats[EFX_MAC_RX_PAUSE_PKTS] -
+			stats->imissed - stats->ierrors);
+		stats->ipackets = port->ipackets;
 	}
 
 unlock:
@@ -666,7 +690,7 @@ sfc_xstats_get_names(struct rte_eth_dev *dev,
 	for (i = 0; i < EFX_MAC_NSTATS; ++i) {
 		if (EFX_MAC_STAT_SUPPORTED(port->mac_stats_mask, i)) {
 			if (xstats_names != NULL && nstats < xstats_count)
-				strncpy(xstats_names[nstats].name,
+				strlcpy(xstats_names[nstats].name,
 					efx_mac_stat_name(sa->nic, i),
 					sizeof(xstats_names[0].name));
 			nstats++;
@@ -744,9 +768,8 @@ sfc_xstats_get_names_by_id(struct rte_eth_dev *dev,
 		if ((ids == NULL) || (ids[nb_written] == nb_supported)) {
 			char *name = xstats_names[nb_written++].name;
 
-			strncpy(name, efx_mac_stat_name(sa->nic, i),
+			strlcpy(name, efx_mac_stat_name(sa->nic, i),
 				sizeof(xstats_names[0].name));
-			name[sizeof(xstats_names[0].name) - 1] = '\0';
 		}
 
 		++nb_supported;
@@ -926,6 +949,12 @@ sfc_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 
 	sfc_adapter_lock(sa);
 
+	/*
+	 * Copy the address to the device private data so that
+	 * it could be recalled in the case of adapter restart.
+	 */
+	ether_addr_copy(mac_addr, &port->default_mac_addr);
+
 	if (port->isolated) {
 		sfc_err(sa, "isolated mode is active on the port");
 		sfc_err(sa, "will not set MAC address");
@@ -961,9 +990,9 @@ sfc_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 
 		/*
 		 * Since setting MAC address with filters installed is not
-		 * allowed on the adapter, one needs to simply restart adapter
-		 * so that the new MAC address will be taken from an outer
-		 * storage and set flawlessly by means of sfc_start() call
+		 * allowed on the adapter, the new MAC address will be set
+		 * by means of adapter restart. sfc_start() shall retrieve
+		 * the new address from the device private data and set it.
 		 */
 		sfc_stop(sa);
 		rc = sfc_start(sa);
@@ -972,6 +1001,13 @@ sfc_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 	}
 
 unlock:
+	/*
+	 * In the case of failure sa->port->default_mac_addr does not
+	 * need rollback since no error code is returned, and the upper
+	 * API will anyway update the external MAC address storage.
+	 * To be consistent with that new value it is better to keep
+	 * the device private value the same.
+	 */
 	sfc_adapter_unlock(sa);
 }
 
@@ -1017,7 +1053,7 @@ sfc_set_mc_addr_list(struct rte_eth_dev *dev, struct ether_addr *mc_addr_set,
 	if (rc != 0)
 		sfc_err(sa, "cannot set multicast address list (rc = %u)", rc);
 
-	SFC_ASSERT(rc > 0);
+	SFC_ASSERT(rc >= 0);
 	return -rc;
 }
 
@@ -1083,8 +1119,6 @@ static uint32_t
 sfc_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
 	struct sfc_adapter *sa = dev->data->dev_private;
-
-	sfc_log_init(sa, "RxQ=%u", rx_queue_id);
 
 	return sfc_rx_qdesc_npending(sa, rx_queue_id);
 }
@@ -1217,13 +1251,9 @@ sfc_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 			  struct rte_eth_rss_conf *rss_conf)
 {
 	struct sfc_adapter *sa = dev->data->dev_private;
-	struct sfc_port *port = &sa->port;
 
-	if ((sa->rss_support != EFX_RX_SCALE_EXCLUSIVE) || port->isolated)
+	if (sa->rss_support != EFX_RX_SCALE_EXCLUSIVE)
 		return -ENOTSUP;
-
-	if (sa->rss_channels == 0)
-		return -EINVAL;
 
 	sfc_adapter_lock(sa);
 
@@ -1709,13 +1739,13 @@ sfc_eth_dev_secondary_set_ops(struct rte_eth_dev *dev)
 
 	dp_rx = sfc_dp_find_rx_by_name(&sfc_dp_head, sa->dp_rx_name);
 	if (dp_rx == NULL) {
-		sfc_err(sa, "cannot find %s Rx datapath", sa->dp_tx_name);
+		sfc_err(sa, "cannot find %s Rx datapath", sa->dp_rx_name);
 		rc = ENOENT;
 		goto fail_dp_rx;
 	}
 	if (~dp_rx->features & SFC_DP_RX_FEAT_MULTI_PROCESS) {
 		sfc_err(sa, "%s Rx datapath does not support multi-process",
-			sa->dp_tx_name);
+			sa->dp_rx_name);
 		rc = EINVAL;
 		goto fail_dp_rx_multi_process;
 	}

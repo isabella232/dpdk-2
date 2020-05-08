@@ -49,6 +49,7 @@ extern "C" {
 #include <stdio.h>
 #include <sys/queue.h>
 
+#include <rte_config.h>
 #include <rte_log.h>
 
 __attribute__((format(printf, 2, 0)))
@@ -59,15 +60,18 @@ rte_pmd_debug_trace(const char *func_name, const char *fmt, ...)
 
 	va_start(ap, fmt);
 
-	char buffer[vsnprintf(NULL, 0, fmt, ap) + 1];
+	{
+		char buffer[vsnprintf(NULL, 0, fmt, ap) + 1];
 
-	va_end(ap);
+		va_end(ap);
 
-	va_start(ap, fmt);
-	vsnprintf(buffer, sizeof(buffer), fmt, ap);
-	va_end(ap);
+		va_start(ap, fmt);
+		vsnprintf(buffer, sizeof(buffer), fmt, ap);
+		va_end(ap);
 
-	rte_log(RTE_LOG_ERR, RTE_LOGTYPE_PMD, "%s: %s", func_name, buffer);
+		rte_log(RTE_LOG_ERR, RTE_LOGTYPE_PMD, "%s: %s",
+			func_name, buffer);
+	}
 }
 
 /*
@@ -277,7 +281,7 @@ __attribute__((used)) = str
  *   "pci:v8086:d*:sv*:sd*"  all PCI devices supported by this driver
  *                           whose vendor id is 0x8086.
  *
- * The format of the kernel modules list is a parenthesed expression
+ * The format of the kernel modules list is a parenthesized expression
  * containing logical-and (&) and logical-or (|).
  *
  * The device pattern and the kmod expression are separated by a space.
